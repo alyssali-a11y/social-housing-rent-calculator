@@ -303,6 +303,22 @@
       gap: 8px;
     }
 
+    .ocr-fields {
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+      padding: 10px 12px;
+      border: 1px solid #d9e4f2;
+      border-radius: 8px;
+      background: #fff;
+      color: #344054;
+      font-size: 13px;
+    }
+
+    .ocr-fields strong {
+      color: var(--text);
+    }
+
     .candidate-btn {
       min-height: 40px;
       border: 1px solid #b8c4d6;
@@ -559,6 +575,23 @@
         </div>
         <div class="panel-body">
           <div class="form-grid">
+            <fieldset class="field full doc-reader">
+              <legend>上傳權狀或一類謄本辨識</legend>
+              <div class="doc-actions">
+                <label class="upload-button" for="documentFile">上傳權狀或謄本</label>
+                <input id="documentFile" type="file" accept="image/*,application/pdf">
+                <label class="upload-button" for="cameraFile">拍照辨識</label>
+                <input id="cameraFile" type="file" accept="image/*" capture="environment">
+                <button class="btn" id="runOcrBtn" type="button">開始辨識</button>
+              </div>
+              <p class="hint">辨識後會嘗試帶入縣市、行政區、詳細地址、屋齡與面積；所有欄位仍可手動修改。</p>
+              <div class="ocr-status" id="ocrStatus">尚未選擇檔案。</div>
+              <div class="ocr-preview" id="ocrPreview" hidden>
+                <img id="ocrImagePreview" alt="上傳文件預覽" hidden>
+                <div class="ocr-fields" id="ocrFields" hidden></div>
+                <div class="ocr-candidates" id="ocrCandidates"></div>
+              </div>
+            </fieldset>
             <fieldset class="field">
               <legend>案件類型</legend>
               <div class="segmented">
@@ -612,22 +645,6 @@
               <legend>優質設備</legend>
               <div class="check-list" id="equipmentList"></div>
               <p class="hint">每項以 500 元估算，整層住宅最高 2,000 元，獨立套房最高 1,000 元。</p>
-            </fieldset>
-            <fieldset class="field full doc-reader">
-              <legend>權狀／一類謄本面積辨識</legend>
-              <div class="doc-actions">
-                <label class="upload-button" for="documentFile">上傳權狀或謄本</label>
-                <input id="documentFile" type="file" accept="image/*,application/pdf">
-                <label class="upload-button" for="cameraFile">拍照辨識</label>
-                <input id="cameraFile" type="file" accept="image/*" capture="environment">
-                <button class="btn" id="runOcrBtn" type="button">開始辨識</button>
-              </div>
-              <p class="hint">支援照片、圖片與 PDF。系統會嘗試抓取平方公尺或坪數，請確認後再送出。</p>
-              <div class="ocr-status" id="ocrStatus">尚未選擇檔案。</div>
-              <div class="ocr-preview" id="ocrPreview" hidden>
-                <img id="ocrImagePreview" alt="上傳文件預覽" hidden>
-                <div class="ocr-candidates" id="ocrCandidates"></div>
-              </div>
             </fieldset>
             <div class="form-actions">
               <button class="btn primary" type="submit">送出</button>
@@ -991,11 +1008,11 @@
       resetResult();
     }
 
-    function populateDistricts() {
+    function populateDistricts(shouldReset = true) {
       const city = $("city").value;
       const districts = unique(DATA.rows.filter((row) => row.city === city).map((row) => row.district));
       $("district").innerHTML = `<option value="">請選擇行政區</option>` + districts.map((district) => `<option value="${district}">${district}</option>`).join("");
-      resetResult();
+      if (shouldReset) resetResult();
     }
 
     function clearForm() {
@@ -1094,6 +1111,150 @@
         .slice(0, 8);
     }
 
+    function compactText(text) {
+      return normalizeOcrText(text).replace(/\s+/g, "");
+    }
+
+    function placeVariants(name) {
+      return unique([name, name.replace(/臺/g, "台"), name.replace(/台/g, "臺")]);
+    }
+
+    function includesPlace(text, name) {
+      return placeVariants(name).some((variant) => text.includes(variant));
+    }
+
+    function detectCity(text) {
+      const compact = compactText(text);
+      const cities = unique(DATA.rows.map((row) => row.city)).sort((a, b) => b.length - a.length);
+      return cities.find((city) => includesPlace(compact, city)) || "";
+    }
+
+    function districtsForCity(city) {
+      return unique(DATA.rows
+        .filter((row) => !city || row.city === city)
+        .map((row) => row.district)
+        .filter((district) => district && district !== "其他"))
+        .sort((a, b) => b.length - a.length);
+    }
+
+    function detectDistrict(text, city) {
+      const compact = compactText(text);
+      return districtsForCity(city).find((district) => includesPlace(compact, district)) || "";
+    }
+
+    function cleanAddressSegment(segment, city, district) {
+      let clean = segment
+        .replace(/^(?:建物門牌|建物地址|房屋門牌|門牌地址|門牌|地址|坐落|建物坐落)[:：]?/, "")
+        .replace(/^(?:土地坐落|基地坐落|建號|地號)[:：]?/, "")
+        .replace(/[，,。；;].*$/, "");
+      placeVariants(city).forEach((variant) => {
+        clean = clean.replace(variant, "");
+      });
+      placeVariants(district).forEach((variant) => {
+        clean = clean.replace(variant, "");
+      });
+      clean = clean.replace(/^(?:詳如|以下|：|:)+/, "").trim();
+      const stop = clean.search(/(?:主要用途|用途|層次|總面積|建物面積|權利範圍|登記日期|所有權人|建築完成|權狀|謄本|地號|建號)/);
+      if (stop >= 0) clean = clean.slice(0, stop);
+      const numberEnd = clean.search(/號/);
+      if (numberEnd >= 0) clean = clean.slice(0, Math.min(clean.length, numberEnd + 12));
+      return clean.slice(0, 80);
+    }
+
+    function extractAddress(text, city, district) {
+      const compact = compactText(text);
+      const labelMatch = compact.match(/(?:建物門牌|建物地址|房屋門牌|門牌地址|門牌|地址)[:：]?(.{4,100})/);
+      if (labelMatch) {
+        const byLabel = cleanAddressSegment(labelMatch[1], city, district);
+        if (byLabel) return byLabel;
+      }
+
+      const cityVariant = placeVariants(city).find((variant) => compact.includes(variant));
+      if (!cityVariant) return "";
+      const cityIndex = compact.indexOf(cityVariant);
+      const segment = compact.slice(cityIndex, cityIndex + 110);
+      return cleanAddressSegment(segment, city, district);
+    }
+
+    function rocYearToAd(year) {
+      const numeric = Number(year);
+      if (!Number.isFinite(numeric) || numeric <= 0) return NaN;
+      return numeric < 1911 ? numeric + 1911 : numeric;
+    }
+
+    function calculateAgeFromDate(year, month = 1, day = 1) {
+      const adYear = rocYearToAd(year);
+      const current = new Date();
+      if (!Number.isFinite(adYear) || adYear < 1900 || adYear > current.getFullYear()) return "";
+      let age = current.getFullYear() - adYear;
+      const numericMonth = Number(month) || 1;
+      const numericDay = Number(day) || 1;
+      if (current.getMonth() + 1 < numericMonth || (current.getMonth() + 1 === numericMonth && current.getDate() < numericDay)) {
+        age -= 1;
+      }
+      return String(Math.max(0, age));
+    }
+
+    function extractAge(text) {
+      const normalized = normalizeOcrText(text);
+      const completeDate = normalized.match(/(?:建築完成日期|建築完成日|建築完成|完工日期|完工日)[^0-9]{0,12}([0-9]{2,4})[年./\- ]{1,3}([0-9]{1,2})[月./\- ]{0,3}([0-9]{1,2})?/);
+      if (completeDate) return calculateAgeFromDate(completeDate[1], completeDate[2], completeDate[3]);
+      const yearOnly = normalized.match(/(?:建築完成日期|建築完成日|建築完成|完工日期|完工日)[^0-9]{0,12}([0-9]{2,4})/);
+      if (yearOnly) return calculateAgeFromDate(yearOnly[1]);
+      return "";
+    }
+
+    function detectPropertyFields(text) {
+      const city = detectCity(text);
+      const district = detectDistrict(text, city);
+      return {
+        city,
+        district,
+        address: extractAddress(text, city, district),
+        age: extractAge(text),
+      };
+    }
+
+    function renderDetectedFields(fields) {
+      const rows = [
+        ["縣市", fields.city],
+        ["行政區", fields.district],
+        ["詳細地址", fields.address],
+        ["屋齡", fields.age ? `${fields.age} 年` : ""],
+      ];
+      const filled = rows.filter(([, value]) => value);
+      $("ocrFields").hidden = false;
+      $("ocrFields").innerHTML = filled.length
+        ? filled.map(([label, value]) => `<div><strong>${label}</strong>：${value}</div>`).join("")
+        : "<div>尚未辨識到縣市、行政區、地址或屋齡，可直接手動輸入。</div>";
+    }
+
+    function applyDetectedFields(fields) {
+      const applied = [];
+      if (fields.city) {
+        $("city").value = fields.city;
+        populateDistricts(false);
+        applied.push("縣市");
+      }
+      if (fields.district && [...$("district").options].some((option) => option.value === fields.district)) {
+        $("district").value = fields.district;
+        applied.push("行政區");
+      }
+      if (fields.address) {
+        $("address").value = fields.address;
+        applied.push("詳細地址");
+      }
+      if (fields.age) {
+        $("age").value = fields.age;
+        applied.push("屋齡");
+      }
+      renderDetectedFields(fields);
+      if (applied.length) {
+        showToast(`已帶入${applied.join("、")}`);
+        if (hasSubmittedResult) resetResult("資料已變更", "請重新按送出產生最新判斷結果。");
+      }
+    }
+
     function renderOcrCandidates(candidates) {
       $("ocrPreview").hidden = false;
       if (!candidates.length) {
@@ -1123,7 +1284,9 @@
       selectedDocumentFile = file;
       $("ocrPreview").hidden = false;
       $("ocrCandidates").innerHTML = "";
-      $("ocrStatus").textContent = `已選擇：${file.name}。按「開始辨識」後自動判讀面積。`;
+      $("ocrFields").hidden = true;
+      $("ocrFields").innerHTML = "";
+      $("ocrStatus").textContent = `已選擇：${file.name}。按「開始辨識」後自動判讀欄位與面積。`;
 
       if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
       previewObjectUrl = "";
@@ -1142,6 +1305,8 @@
       $("cameraFile").value = "";
       $("ocrStatus").textContent = "尚未選擇檔案。";
       $("ocrCandidates").innerHTML = "";
+      $("ocrFields").hidden = true;
+      $("ocrFields").innerHTML = "";
       $("ocrPreview").hidden = true;
       $("ocrImagePreview").hidden = true;
       $("ocrImagePreview").removeAttribute("src");
@@ -1213,6 +1378,8 @@
       button.disabled = true;
       button.textContent = "辨識中...";
       $("ocrCandidates").innerHTML = "";
+      $("ocrFields").hidden = true;
+      $("ocrFields").innerHTML = "";
       $("ocrStatus").textContent = "準備辨識文件...";
 
       try {
@@ -1227,6 +1394,7 @@
         } else {
           throw new Error("檔案格式不支援，請上傳圖片或 PDF。");
         }
+        applyDetectedFields(detectPropertyFields(text));
         renderOcrCandidates(parseAreaCandidates(text));
       } catch (error) {
         $("ocrStatus").textContent = error.message || "辨識失敗，請改用較清楚照片或手動輸入面積。";
