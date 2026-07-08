@@ -1198,6 +1198,12 @@
     function sumSectionAreas(section, startPattern, stopPattern) {
       const target = subsection(section, startPattern, stopPattern);
       if (!target) return 0;
+      const compact = compactText(target);
+      const totalMatch = compact.match(/總面積[^0-9]{0,16}([0-9]+(?:\.[0-9]+)?)(?:平方公尺|㎡|m2|M2|平方米)?/);
+      if (totalMatch) {
+        const total = Number(totalMatch[1]);
+        if (Number.isFinite(total) && total > 0) return total;
+      }
       const values = areaValuesFromLines(normalizeOcrLines(target));
       return values.reduce((sum, value) => sum + value, 0);
     }
@@ -1294,9 +1300,8 @@
       const accessory = sumSectionAreas(section, /附屬建物(?:用途)?(?:面積)?/, /共有部分|主建物|建物門牌|主要用途|建築完成|登記原因|所有權部/);
       const sharedModel = sharedAreaModel(section);
       const indoor = main + accessory;
-      const common = Math.max(sharedModel.shared - sharedModel.parking, 0);
-      const total = indoor + common + sharedModel.parking;
-      const withoutParking = indoor + common;
+      const common = sharedModel.shared;
+      const total = indoor + common;
       return {
         main,
         accessory,
@@ -1304,23 +1309,21 @@
         common,
         parking: sharedModel.parking,
         total,
-        withoutParking,
-        commonRatio: withoutParking > 0 ? common / withoutParking : 0,
+        commonRatio: total > 0 ? common / total : 0,
       };
     }
 
     function totalBuildingAreaCandidate(text) {
       const section = buildingMarkSection(text) || normalizeOcrText(text);
       const model = buildingAreaModel(section);
-      const selected = model.parking > 0 ? model.withoutParking : model.total;
+      const selected = model.total;
 
       if (model.main > 0 && selected > 0) {
-        const selectedLabel = model.parking > 0 ? "權狀坪數(無車位)" : "權狀坪數";
         return {
           sqm: selected,
           ping: selected * SQM_TO_PING,
           score: 130,
-          source: `依房屋坪數計算器：${selectedLabel} ${decimal(selected * SQM_TO_PING)} 坪；室內 ${decimal(model.indoor * SQM_TO_PING)}、公設 ${decimal(model.common * SQM_TO_PING)}、車位 ${decimal(model.parking * SQM_TO_PING)}、公設比 ${percent(model.commonRatio)}`,
+          source: `依房屋坪數計算器：權狀坪數 ${decimal(selected * SQM_TO_PING)} 坪；主建物 ${decimal(model.main * SQM_TO_PING)}、附屬建物 ${decimal(model.accessory * SQM_TO_PING)}、共有部分 ${decimal(model.common * SQM_TO_PING)}、共有占比 ${percent(model.commonRatio)}`,
         };
       }
 
