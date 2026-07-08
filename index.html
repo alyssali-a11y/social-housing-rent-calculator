@@ -1278,8 +1278,20 @@
       return unique([name, name.replace(/臺/g, "台"), name.replace(/台/g, "臺")]);
     }
 
+    function loosePlaceVariants(name) {
+      if (!name) return [];
+      return unique(placeVariants(name).flatMap((variant) => {
+        const short = variant.replace(/[縣市鄉鎮區]$/, "");
+        return short && short !== variant ? [variant, short] : [variant];
+      }));
+    }
+
     function includesPlace(text, name) {
       return placeVariants(name).some((variant) => text.includes(variant));
+    }
+
+    function includesLoosePlace(text, name) {
+      return loosePlaceVariants(name).some((variant) => text.includes(variant));
     }
 
     function detectCityInSource(source) {
@@ -1319,6 +1331,29 @@
         .filter((row) => row.district === district)
         .map((row) => row.city));
       return cities.length === 1 ? cities[0] : "";
+    }
+
+    function fileNameSource(fileName) {
+      return compactText(String(fileName || "")
+        .replace(/\.[^.]+$/, "")
+        .replace(/[_\-()[\]{}【】（）]/g, " "));
+    }
+
+    function detectCityFromFileName(fileName) {
+      const source = fileNameSource(fileName);
+      if (!source) return "";
+      const cities = unique(DATA.rows.map((row) => row.city)).sort((a, b) => b.length - a.length);
+      const city = cities.find((item) => includesLoosePlace(source, item));
+      if (city) return city;
+
+      const district = detectDistrictFromFileName(fileName, "");
+      return cityFromDistrict(district);
+    }
+
+    function detectDistrictFromFileName(fileName, city = "") {
+      const source = fileNameSource(fileName);
+      if (!source) return "";
+      return districtsForCity(city).find((district) => includesLoosePlace(source, district)) || "";
     }
 
     function extractIssuerSource(text) {
@@ -1433,14 +1468,17 @@
       return "";
     }
 
-    function detectPropertyFields(text) {
+    function detectPropertyFields(text, fileName = "") {
       const addressSource = extractAddressSource(text);
       const addressCity = detectCityInSource(addressSource);
+      const fileCity = detectCityFromFileName(fileName);
       const issuerCity = detectCityFromIssuer(text);
-      let city = addressCity || issuerCity;
+      let city = addressCity || fileCity || issuerCity;
+      const fileDistrict = detectDistrictFromFileName(fileName, city);
       const buildingDistrict = detectDistrictFromBuildingArea(text, city);
+      if (!city && fileDistrict) city = cityFromDistrict(fileDistrict);
       if (!city && buildingDistrict) city = cityFromDistrict(buildingDistrict);
-      const district = detectDistrictInSource(addressSource, city) || buildingDistrict || detectDistrict(text, city);
+      const district = detectDistrictInSource(addressSource, city) || fileDistrict || buildingDistrict || detectDistrict(text, city);
       return {
         city,
         district,
@@ -1628,9 +1666,11 @@
         } else {
           throw new Error("檔案格式不支援，請上傳圖片或 PDF。");
         }
-        applyDetectedFields(detectPropertyFields(text));
+        applyDetectedFields(detectPropertyFields(text, selectedDocumentFile.name));
         renderOcrCandidates(parseAreaCandidates(text));
       } catch (error) {
+        const fileFields = detectPropertyFields("", selectedDocumentFile.name);
+        if (fileFields.city || fileFields.district) applyDetectedFields(fileFields);
         $("ocrStatus").textContent = error.message || "辨識失敗，請改用較清楚照片或手動輸入面積。";
       } finally {
         button.disabled = false;
