@@ -238,6 +238,37 @@
       font-size: 13px;
     }
 
+    .level-help {
+      border: 1px solid #e4e9f2;
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px 10px;
+      color: #344054;
+      font-size: 13px;
+    }
+
+    .level-help summary {
+      cursor: pointer;
+      color: var(--primary);
+      font-weight: 700;
+    }
+
+    .level-help dl {
+      display: grid;
+      gap: 8px;
+      margin: 10px 0 0;
+    }
+
+    .level-help dt {
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .level-help dd {
+      margin: 2px 0 0;
+      color: var(--muted);
+    }
+
     .doc-reader {
       border: 1px dashed #b8c4d6;
       border-radius: 8px;
@@ -632,10 +663,44 @@
             <div class="field">
               <label for="location">案件地點等級</label>
               <select id="location"></select>
+              <details class="level-help">
+                <summary>查看區位說明</summary>
+                <dl>
+                  <div>
+                    <dt>優質區位</dt>
+                    <dd>位處核心生活圈，交通運輸便捷、生活機能完善或就業機會高度集中。</dd>
+                  </div>
+                  <div>
+                    <dt>中上區位</dt>
+                    <dd>位處一般主要生活圈、交通可及性佳、周邊設施水準中等以上或鄰近特定產業園區。</dd>
+                  </div>
+                  <div>
+                    <dt>中下區位</dt>
+                    <dd>位處次要生活圈，交通便利性相對不足、周邊設施有限或就業機會分散。</dd>
+                  </div>
+                </dl>
+              </details>
             </div>
             <div class="field">
               <label for="renovation">裝潢等級</label>
               <select id="renovation"></select>
+              <details class="level-help">
+                <summary>查看裝潢說明</summary>
+                <dl>
+                  <div>
+                    <dt>中等裝修</dt>
+                    <dd>天地壁有特殊設計，並具備系統櫃等收納櫃體，兼具舒適與美觀。</dd>
+                  </div>
+                  <div>
+                    <dt>簡易裝修</dt>
+                    <dd>天地壁有基本油漆或整理、具備基本收納功能。</dd>
+                  </div>
+                  <div>
+                    <dt>無裝修</dt>
+                    <dd>僅提供基本居住功能，天地壁無額外整理。</dd>
+                  </div>
+                </dl>
+              </details>
             </div>
             <div class="field">
               <label for="equipmentValue">設備調整值</label>
@@ -1087,23 +1152,54 @@
       if (!current || next.score > current.score) map.set(key, next);
     }
 
+    function numbersNearLabel(compact, labelPattern) {
+      const labels = [...compact.matchAll(labelPattern)];
+      return labels.flatMap((match) => {
+        let segment = compact.slice(match.index, match.index + 110);
+        const stop = segment.slice(4).search(/(?:主建物|附屬建物|共有部分|權利範圍|登記原因|建築完成|建物門牌|總面積)/);
+        if (stop >= 0) segment = segment.slice(0, stop + 4);
+        const unitValues = [...segment.matchAll(/([0-9]+(?:\.[0-9]+)?)(?:平方公尺|㎡|m2|M2|平方米)/g)].map((item) => Number(item[1]));
+        const decimalValues = [...segment.matchAll(/([0-9]+\.[0-9]+)/g)].map((item) => Number(item[1]));
+        const values = unitValues.length ? unitValues : decimalValues;
+        return values.filter((value) => Number.isFinite(value) && value > 0 && value < 1000);
+      });
+    }
+
+    function bestAreaNearLabel(compact, labelPattern) {
+      const values = numbersNearLabel(compact, labelPattern);
+      if (!values.length) return NaN;
+      return values.reduce((sum, value) => sum + value, 0);
+    }
+
+    function totalBuildingAreaCandidate(text) {
+      const compact = compactText(text);
+      const main = bestAreaNearLabel(compact, /主建物(?:面積)?/g);
+      const accessory = bestAreaNearLabel(compact, /附屬建物(?:面積)?/g);
+      const shared = bestAreaNearLabel(compact, /共有部分(?:面積)?/g);
+      const parts = [main, accessory, shared].filter(Number.isFinite);
+
+      if (parts.length >= 2) {
+        const total = parts.reduce((sum, value) => sum + value, 0);
+        return { sqm: total, ping: total * SQM_TO_PING, score: 120, source: "主建物＋附屬建物＋共有部分" };
+      }
+
+      const explicitTotal = compact.match(/(?:總面積|建物總面積|權狀總面積|登記總面積|面積合計|合計面積)[^0-9]{0,16}([0-9]+(?:\.[0-9]+)?)(?:平方公尺|㎡|m2|M2|平方米)?/);
+      if (explicitTotal) {
+        const sqm = Number(explicitTotal[1]);
+        if (Number.isFinite(sqm) && sqm > 0) {
+          return { sqm, ping: sqm * SQM_TO_PING, score: 110, source: "總面積" };
+        }
+      }
+
+      return null;
+    }
+
     function parseAreaCandidates(text) {
       const normalized = normalizeOcrText(text);
       const candidates = new Map();
-      const sqmUnitPattern = /([0-9]+(?:\.[0-9]+)?)\s*(?:平方公尺|平方|㎡|m²|m2|M2|平方米)/g;
-      const pingUnitPattern = /([0-9]+(?:\.[0-9]+)?)\s*坪/g;
-      const contextPattern = /(總面積|建物面積|權狀面積|登記面積|合計|主建物|附屬建物|共有部分)[^0-9]{0,18}([0-9]+(?:\.[0-9]+)?)/g;
-
-      for (const match of normalized.matchAll(sqmUnitPattern)) {
-        addAreaCandidate(candidates, match[1], "sqm", 88, "平方公尺欄位");
-      }
-      for (const match of normalized.matchAll(pingUnitPattern)) {
-        addAreaCandidate(candidates, match[1], "ping", 84, "坪數欄位");
-      }
-      for (const match of normalized.matchAll(contextPattern)) {
-        const keyword = match[1];
-        const score = /總面積|建物面積|權狀面積|登記面積|合計/.test(keyword) ? 96 : 58;
-        addAreaCandidate(candidates, match[2], "sqm", score, keyword);
+      const totalCandidate = totalBuildingAreaCandidate(normalized);
+      if (totalCandidate) {
+        addAreaCandidate(candidates, totalCandidate.sqm, "sqm", totalCandidate.score, totalCandidate.source);
       }
 
       return [...candidates.values()]
@@ -1146,7 +1242,8 @@
       let clean = segment
         .replace(/^(?:建物門牌|建物地址|房屋門牌|門牌地址|門牌|地址|坐落|建物坐落)[:：]?/, "")
         .replace(/^(?:土地坐落|基地坐落|建號|地號)[:：]?/, "")
-        .replace(/[，,。；;].*$/, "");
+        .replace(/[，,。；;].*$/, "")
+        .replace(/\s+/g, "");
       placeVariants(city).forEach((variant) => {
         clean = clean.replace(variant, "");
       });
@@ -1154,11 +1251,15 @@
         clean = clean.replace(variant, "");
       });
       clean = clean.replace(/^(?:詳如|以下|：|:)+/, "").trim();
-      const stop = clean.search(/(?:主要用途|用途|層次|總面積|建物面積|權利範圍|登記日期|所有權人|建築完成|權狀|謄本|地號|建號)/);
+      const stop = clean.search(/(?:主要用途|用途|層次|總面積|建物面積|權利範圍|登記日期|所有權人|建築完成|權狀|謄本|地號|建號|基地坐落|土地坐落|原因發生|登記原因)/);
       if (stop >= 0) clean = clean.slice(0, stop);
-      const numberEnd = clean.search(/號/);
-      if (numberEnd >= 0) clean = clean.slice(0, Math.min(clean.length, numberEnd + 12));
-      return clean.slice(0, 80);
+      const roadStart = clean.search(/[一-龥A-Za-z0-9０-９]+(?:大道|路|街|巷|弄|段)/);
+      if (roadStart > 0) clean = clean.slice(roadStart);
+      const addressMatch = clean.match(/^(.{1,80}?號(?:之[0-9一二三四五六七八九十]+)?(?:[0-9一二三四五六七八九十]+樓(?:之[0-9一二三四五六七八九十]+)?)?)/);
+      if (addressMatch) return addressMatch[1];
+      const fallbackEnd = clean.search(/(?:主要用途|用途|層次|總面積|建物面積|權利範圍)/);
+      if (fallbackEnd >= 0) clean = clean.slice(0, fallbackEnd);
+      return clean.slice(0, 40);
     }
 
     function extractAddress(text, city, district) {
@@ -1259,10 +1360,10 @@
       $("ocrPreview").hidden = false;
       if (!candidates.length) {
         $("ocrCandidates").innerHTML = "";
-        $("ocrStatus").textContent = "未找到可判讀的面積，請改用較清楚照片，或直接手動輸入平方公尺。";
+        $("ocrStatus").textContent = "未找到可判讀的總面積，請確認文件是否有主建物、附屬建物、共有部分或總面積，或直接手動輸入平方公尺。";
         return;
       }
-      $("ocrStatus").textContent = `已找到 ${candidates.length} 組可能面積，已先套用最可能的數值，仍請人工確認。`;
+      $("ocrStatus").textContent = "已依總面積規則帶入面積，仍請人工確認。";
       $("ocrCandidates").dataset.candidates = JSON.stringify(candidates);
       $("ocrCandidates").innerHTML = candidates.map((candidate, index) => `
         <button class="candidate-btn${index === 0 ? " active" : ""}" type="button" data-candidate-index="${index}">
