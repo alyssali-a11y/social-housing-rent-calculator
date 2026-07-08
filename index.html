@@ -334,6 +334,14 @@
       gap: 8px;
     }
 
+    .ocr-warning {
+      flex-basis: 100%;
+      color: #b42318;
+      font-weight: 800;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
     .ocr-fields {
       display: grid;
       gap: 6px;
@@ -1617,14 +1625,15 @@
         $("ocrStatus").textContent = "未找到可判讀的權狀面積，請確認文件是否有層次面積、附屬建物、共有部分與權利範圍，或直接手動輸入平方公尺。";
         return;
       }
-      $("ocrStatus").textContent = "已依謄本／權狀公式帶入權狀坪數，仍請人工確認。";
+      $("ocrStatus").textContent = "已完成辨識。";
       $("ocrCandidates").dataset.candidates = JSON.stringify(candidates);
-      $("ocrCandidates").innerHTML = candidates.map((candidate, index) => `
+      const candidateButtons = candidates.map((candidate, index) => `
         <button class="candidate-btn${index === 0 ? " active" : ""}" type="button" data-candidate-index="${index}">
           ${decimal(candidate.sqm)} 平方公尺（${decimal(candidate.ping)} 坪）<br>
           <small>權狀面積</small>
         </button>
       `).join("");
+      $("ocrCandidates").innerHTML = `${candidateButtons}<div class="ocr-warning">線上辨識功能有限，請務必再次確認相關欄位</div>`;
       applyAreaCandidate(candidates[0], "OCR／AI 判讀");
     }
 
