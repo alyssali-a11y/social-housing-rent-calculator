@@ -398,16 +398,53 @@
 
     .status.ok { background: var(--ok-soft); border-color: #abefc6; }
     .status.warn { background: var(--warn-soft); border-color: #fedf89; }
-    .status.bad { background: var(--bad-soft); border-color: #fecdca; }
+    .status.bad {
+      background: #fff1f0;
+      border-color: #d92d20;
+      border-width: 2px;
+      box-shadow: inset 6px 0 0 #d92d20, 0 10px 24px rgba(217, 45, 32, .16);
+    }
 
     .status h2 {
       margin: 0;
       font-size: 22px;
     }
 
+    .status.bad h2 {
+      color: #b42318;
+      font-size: 28px;
+      font-weight: 900;
+    }
+
     .status p {
       margin: 2px 0 0;
       color: var(--muted);
+    }
+
+    .decision-type {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      margin-top: 10px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 2px solid #1849a9;
+      background: #eff8ff;
+      color: #1849a9;
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    .decision-type.suite {
+      border-color: #7f56d9;
+      background: #f4f3ff;
+      color: #5925dc;
+    }
+
+    .decision-type.whole {
+      border-color: #1570ef;
+      background: #eff8ff;
+      color: #1849a9;
     }
 
     .badge {
@@ -488,7 +525,14 @@
 
     .calc-card.active {
       border-color: var(--primary);
-      box-shadow: inset 4px 0 0 var(--primary);
+      border-width: 2px;
+      box-shadow: inset 6px 0 0 var(--primary), 0 10px 20px rgba(21, 112, 239, .14);
+    }
+
+    .calc-card.active h3 {
+      background: var(--primary);
+      color: #fff;
+      border-bottom-color: var(--primary);
     }
 
     .calc-card h3 {
@@ -736,6 +780,7 @@
             <div>
               <h2 id="statusTitle">待輸入</h2>
               <p id="statusDesc"></p>
+              <div class="decision-type" id="decisionTypeBadge" hidden></div>
             </div>
           </div>
 
@@ -985,16 +1030,19 @@
       $("allowedTotal").textContent = money(selected.allowedTotal);
       $("plannedRent").textContent = money(rent);
       $("comparison").innerHTML = renderComparison(calcFor("suite"), calcFor("whole"), selected.type);
+      $("decisionTypeBadge").hidden = false;
+      $("decisionTypeBadge").className = `decision-type ${selected.type}`;
+      $("decisionTypeBadge").textContent = `本次判斷標準：${selected.label}`;
 
       const statusBox = $("statusBox");
       statusBox.className = "status";
       if (overReceiveCap) {
         statusBox.classList.add("bad");
-        $("statusTitle").textContent = "已超過，不可送件";
+        $("statusTitle").textContent = "無法送件";
         $("statusDesc").textContent = `本件預計簽約租金 ${money(rent)} 已超過 ${typeLabel[type]} 的縣市收件上限 ${money(normal.receiveCap)}，依 PDF 規則不收件。`;
       } else if (overAllowed) {
         statusBox.classList.add("bad");
-        $("statusTitle").textContent = "已超過，不可送件";
+        $("statusTitle").textContent = "無法送件";
         $("statusDesc").textContent = `本件預計簽約租金 ${money(rent)} 已高於可受理總租金 ${money(selected.allowedTotal)}，不可送件。`;
       } else if (actualUnit > normal.rate) {
         statusBox.classList.add("warn");
@@ -1024,6 +1072,9 @@
       $("statusBox").className = "status";
       $("statusTitle").textContent = title;
       $("statusDesc").textContent = desc;
+      $("decisionTypeBadge").hidden = true;
+      $("decisionTypeBadge").textContent = "";
+      $("decisionTypeBadge").className = "decision-type";
       $("actualUnit").textContent = "-";
       $("baseRate").textContent = "-";
       $("allowedTotal").textContent = "-";
@@ -1206,13 +1257,24 @@
     function sumSectionAreas(section, startPattern, stopPattern) {
       const target = subsection(section, startPattern, stopPattern);
       if (!target) return 0;
-      const compact = compactText(target);
-      const totalMatch = compact.match(/總面積[^0-9]{0,16}([0-9]+(?:\.[0-9]+)?)(?:平方公尺|㎡|m2|M2|平方米)?/);
-      if (totalMatch) {
-        const total = Number(totalMatch[1]);
-        if (Number.isFinite(total) && total > 0) return total;
-      }
       const values = areaValuesFromLines(normalizeOcrLines(target));
+      return values.reduce((sum, value) => sum + value, 0);
+    }
+
+    function sumLayerAreas(section) {
+      const target = subsection(section, /主建物(?:層次)?(?:面積)?/, /附屬建物|共有部分|建物門牌|主要用途|建築完成|登記原因|所有權部/);
+      if (!target) return 0;
+      const compact = compactText(target);
+      const layerMatches = [...compact.matchAll(/層次面積[^0-9]{0,16}([0-9]+(?:\.[0-9]+)?)(?:平方公尺|㎡|m2|M2|平方米)?/g)];
+      if (layerMatches.length) {
+        return layerMatches.reduce((sum, match) => {
+          const value = Number(match[1]);
+          return Number.isFinite(value) && value > 0 ? sum + value : sum;
+        }, 0);
+      }
+
+      const lines = normalizeOcrLines(target).filter((line) => !/總面積/.test(line));
+      const values = areaValuesFromLines(lines);
       return values.reduce((sum, value) => sum + value, 0);
     }
 
@@ -1304,7 +1366,7 @@
     }
 
     function buildingAreaModel(section) {
-      const main = sumSectionAreas(section, /主建物(?:層次)?(?:面積)?/, /附屬建物|共有部分|建物門牌|主要用途|建築完成|登記原因|所有權部/);
+      const main = sumLayerAreas(section);
       const accessory = sumSectionAreas(section, /附屬建物(?:用途)?(?:面積)?/, /共有部分|主建物|建物門牌|主要用途|建築完成|登記原因|所有權部/);
       const sharedModel = sharedAreaModel(section);
       const indoor = main + accessory;
@@ -1333,15 +1395,6 @@
           score: 130,
           source: `依謄本／權狀公式：權狀坪數 ${decimal(selected * SQM_TO_PING)} 坪；層次面積 ${decimal(model.main * SQM_TO_PING)}、附屬建物 ${decimal(model.accessory * SQM_TO_PING)}、共有部分 ${decimal(model.common * SQM_TO_PING)}、共有占比 ${percent(model.commonRatio)}`,
         };
-      }
-
-      const compact = compactText(section);
-      const explicitTotal = compact.match(/(?:總面積|建物總面積|權狀總面積|登記總面積|面積合計|合計面積)[^0-9]{0,16}([0-9]+(?:\.[0-9]+)?)(?:平方公尺|㎡|m2|M2|平方米)?/);
-      if (explicitTotal) {
-        const sqm = Number(explicitTotal[1]);
-        if (Number.isFinite(sqm) && sqm > 0) {
-          return { sqm, ping: sqm * SQM_TO_PING, score: 110, source: "權狀面積" };
-        }
       }
 
       return null;
