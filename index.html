@@ -780,6 +780,10 @@
       return [...new Set(list)];
     }
 
+    function escapeRegExp(value) {
+      return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
     function selectedType() {
       return document.querySelector('input[name="type"]:checked')?.value || "";
     }
@@ -1278,11 +1282,16 @@
       return placeVariants(name).some((variant) => text.includes(variant));
     }
 
-    function detectCity(text, allowFullText = false) {
-      const compact = allowFullText ? compactText(text) : extractAddressSource(text);
+    function detectCityInSource(source) {
+      const compact = compactText(source || "");
       if (!compact) return "";
       const cities = unique(DATA.rows.map((row) => row.city)).sort((a, b) => b.length - a.length);
       return cities.find((city) => includesPlace(compact, city)) || "";
+    }
+
+    function detectCity(text, allowFullText = false) {
+      const source = allowFullText ? text : extractAddressSource(text);
+      return detectCityInSource(source);
     }
 
     function districtsForCity(city) {
@@ -1293,10 +1302,59 @@
         .sort((a, b) => b.length - a.length);
     }
 
-    function detectDistrict(text, city, allowFullText = false) {
-      const compact = allowFullText ? compactText(text) : extractAddressSource(text);
+    function detectDistrictInSource(source, city) {
+      const compact = compactText(source || "");
       if (!compact) return "";
       return districtsForCity(city).find((district) => includesPlace(compact, district)) || "";
+    }
+
+    function detectDistrict(text, city, allowFullText = false) {
+      const source = allowFullText ? text : extractAddressSource(text);
+      return detectDistrictInSource(source, city);
+    }
+
+    function cityFromDistrict(district) {
+      if (!district) return "";
+      const cities = unique(DATA.rows
+        .filter((row) => row.district === district)
+        .map((row) => row.city));
+      return cities.length === 1 ? cities[0] : "";
+    }
+
+    function extractIssuerSource(text) {
+      const compact = compactText(text);
+      const labelMatch = compact.match(/(?:核發機關|發狀機關|核發地政事務所|登記機關|管轄機關|製發機關)[:：]?(.{0,100})/);
+      if (labelMatch) return labelMatch[0];
+
+      const officeMatch = compact.match(/((?:臺|台)?[一-龥]{1,3}[縣市]?[一-龥]{1,8}(?:地政事務所|政府|工務局|建管處))/);
+      return officeMatch ? officeMatch[1] : "";
+    }
+
+    function detectCityFromIssuer(text) {
+      const issuerSource = extractIssuerSource(text);
+      const city = detectCityInSource(issuerSource);
+      if (city) return city;
+
+      const district = detectDistrictInSource(issuerSource, "");
+      return cityFromDistrict(district);
+    }
+
+    function extractBuildingNumberSource(text) {
+      const section = buildingMarkSection(text) || text;
+      const compact = compactText(section);
+      const labelMatch = compact.match(/(?:建物標示部|標示部|建物建號|建號|坐落)[:：]?(.{0,220})/);
+      return labelMatch ? labelMatch[0] : compact.slice(0, 260);
+    }
+
+    function detectDistrictFromBuildingArea(text, city = "") {
+      const source = extractBuildingNumberSource(text);
+      if (!source) return "";
+      return districtsForCity(city).find((district) => {
+        return placeVariants(district).some((variant) => {
+          const pattern = new RegExp(`${escapeRegExp(variant)}[一-龥A-Za-z0-9０-９]{1,18}段`);
+          return pattern.test(source);
+        });
+      }) || "";
     }
 
     function extractAddressSource(text) {
@@ -1321,7 +1379,7 @@
         clean = clean.replace(variant, "");
       });
       clean = clean.replace(/^(?:詳如|以下|：|:)+/, "").trim();
-      const stop = clean.search(/(?:主要用途|用途|層次|總面積|建物面積|權利範圍|登記日期|所有權人|建築完成|權狀|謄本|地號|建號|基地坐落|土地坐落|原因發生|登記原因)/);
+      const stop = clean.search(/(?:建物標示部|標示部|主要用途|用途|層次|總面積|建物面積|權利範圍|登記日期|所有權人|建築完成|權狀|謄本|地號|建號|基地坐落|土地坐落|原因發生|登記原因)/);
       if (stop >= 0) clean = clean.slice(0, stop);
       const roadStart = clean.search(/[一-龥A-Za-z0-9０-９]+(?:大道|路|街|巷|弄|段)/);
       if (roadStart > 0) clean = clean.slice(roadStart);
@@ -1343,7 +1401,8 @@
       if (!cityVariant) return "";
       const cityIndex = compact.indexOf(cityVariant);
       const segment = compact.slice(cityIndex, cityIndex + 110);
-      return cleanAddressSegment(segment, city, district);
+      const cleaned = cleanAddressSegment(segment, city, district);
+      return /(?:大道|路|街|巷|弄).{0,70}號/.test(cleaned) ? cleaned : "";
     }
 
     function rocYearToAd(year) {
@@ -1375,8 +1434,13 @@
     }
 
     function detectPropertyFields(text) {
-      const city = detectCity(text);
-      const district = detectDistrict(text, city);
+      const addressSource = extractAddressSource(text);
+      const addressCity = detectCityInSource(addressSource);
+      const issuerCity = detectCityFromIssuer(text);
+      let city = addressCity || issuerCity;
+      const buildingDistrict = detectDistrictFromBuildingArea(text, city);
+      if (!city && buildingDistrict) city = cityFromDistrict(buildingDistrict);
+      const district = detectDistrictInSource(addressSource, city) || buildingDistrict || detectDistrict(text, city);
       return {
         city,
         district,
