@@ -1323,7 +1323,7 @@
           sqm: selected,
           ping: selected * SQM_TO_PING,
           score: 130,
-          source: `依房屋坪數計算器：權狀坪數 ${decimal(selected * SQM_TO_PING)} 坪；主建物 ${decimal(model.main * SQM_TO_PING)}、附屬建物 ${decimal(model.accessory * SQM_TO_PING)}、共有部分 ${decimal(model.common * SQM_TO_PING)}、共有占比 ${percent(model.commonRatio)}`,
+          source: `依謄本／權狀公式：權狀坪數 ${decimal(selected * SQM_TO_PING)} 坪；層次面積 ${decimal(model.main * SQM_TO_PING)}、附屬建物 ${decimal(model.accessory * SQM_TO_PING)}、共有部分 ${decimal(model.common * SQM_TO_PING)}、共有占比 ${percent(model.commonRatio)}`,
         };
       }
 
@@ -1614,10 +1614,10 @@
       $("ocrPreview").hidden = false;
       if (!candidates.length) {
         $("ocrCandidates").innerHTML = "";
-        $("ocrStatus").textContent = "未找到可判讀的總面積，請確認文件是否有主建物、附屬建物、共有部分或總面積，或直接手動輸入平方公尺。";
+        $("ocrStatus").textContent = "未找到可判讀的權狀面積，請確認文件是否有層次面積、附屬建物、共有部分與權利範圍，或直接手動輸入平方公尺。";
         return;
       }
-      $("ocrStatus").textContent = "已依房屋坪數計算器模型帶入面積，仍請人工確認。";
+      $("ocrStatus").textContent = "已依謄本／權狀公式帶入權狀坪數，仍請人工確認。";
       $("ocrCandidates").dataset.candidates = JSON.stringify(candidates);
       $("ocrCandidates").innerHTML = candidates.map((candidate, index) => `
         <button class="candidate-btn${index === 0 ? " active" : ""}" type="button" data-candidate-index="${index}">
