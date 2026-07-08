@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>社宅五期租金試算</title>
   <script src="./rent-data.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
     :root {
       --bg: #f6f7f9;
@@ -234,6 +236,89 @@
     .hint {
       color: var(--muted);
       font-size: 13px;
+    }
+
+    .doc-reader {
+      border: 1px dashed #b8c4d6;
+      border-radius: 8px;
+      background: #f8fbff;
+      padding: 14px;
+    }
+
+    .doc-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .doc-actions input[type="file"] {
+      position: absolute;
+      inline-size: 1px;
+      block-size: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .upload-button {
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+      padding: 8px 12px;
+      cursor: pointer;
+      transition: .16s ease;
+    }
+
+    .upload-button:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+
+    .ocr-status {
+      margin-top: 10px;
+      color: #344054;
+      font-size: 14px;
+    }
+
+    .ocr-preview {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .ocr-preview img {
+      width: 100%;
+      max-height: 220px;
+      object-fit: contain;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .ocr-candidates {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .candidate-btn {
+      min-height: 40px;
+      border: 1px solid #b8c4d6;
+      border-radius: 8px;
+      background: #fff;
+      color: #344054;
+      padding: 8px 10px;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .candidate-btn:hover,
+    .candidate-btn.active {
+      border-color: var(--primary);
+      background: var(--primary-soft);
+      color: var(--primary);
     }
 
     .form-actions {
@@ -494,8 +579,14 @@
               <input id="address" autocomplete="street-address" placeholder="請輸入路段、巷弄、門牌、樓層">
             </div>
             <div class="field">
-              <label for="area">權狀坪數</label>
-              <input id="area" type="number" min="0" step="0.01">
+              <label for="areaSqm">權狀面積（平方公尺）</label>
+              <input id="areaSqm" type="number" min="0" step="0.01" placeholder="例如 87.83">
+              <p class="hint">1 平方公尺 = 0.3025 坪，輸入後會自動換算。</p>
+            </div>
+            <div class="field">
+              <label for="area">換算坪數</label>
+              <input id="area" type="number" min="0" step="0.01" placeholder="例如 26.57">
+              <p class="hint" id="areaConvertHint">也可直接輸入坪數，系統會同步換算平方公尺。</p>
             </div>
             <div class="field">
               <label for="rent">簽約租金總價</label>
@@ -521,6 +612,22 @@
               <legend>優質設備</legend>
               <div class="check-list" id="equipmentList"></div>
               <p class="hint">每項以 500 元估算，整層住宅最高 2,000 元，獨立套房最高 1,000 元。</p>
+            </fieldset>
+            <fieldset class="field full doc-reader">
+              <legend>權狀／一類謄本面積辨識</legend>
+              <div class="doc-actions">
+                <label class="upload-button" for="documentFile">上傳權狀或謄本</label>
+                <input id="documentFile" type="file" accept="image/*,application/pdf">
+                <label class="upload-button" for="cameraFile">拍照辨識</label>
+                <input id="cameraFile" type="file" accept="image/*" capture="environment">
+                <button class="btn" id="runOcrBtn" type="button">開始辨識</button>
+              </div>
+              <p class="hint">支援照片、圖片與 PDF。系統會嘗試抓取平方公尺或坪數，請確認後再送出。</p>
+              <div class="ocr-status" id="ocrStatus">尚未選擇檔案。</div>
+              <div class="ocr-preview" id="ocrPreview" hidden>
+                <img id="ocrImagePreview" alt="上傳文件預覽" hidden>
+                <div class="ocr-candidates" id="ocrCandidates"></div>
+              </div>
             </fieldset>
             <div class="form-actions">
               <button class="btn primary" type="submit">送出</button>
@@ -581,7 +688,11 @@
     const unit = (value) => Number.isFinite(value) ? `${Math.round(value).toLocaleString("zh-TW")} 元／坪` : "-";
     const percent = (value) => `${Math.round(value * 100)}%`;
     const typeLabel = { whole: "整層住宅", suite: "獨立套房" };
+    const SQM_TO_PING = 0.3025;
     let hasSubmittedResult = false;
+    let isSyncingArea = false;
+    let selectedDocumentFile = null;
+    let previewObjectUrl = "";
 
     function unique(list) {
       return [...new Set(list)];
@@ -593,6 +704,43 @@
 
     function getNumber(id) {
       return Number($(id).value) || 0;
+    }
+
+    function decimal(value, digits = 2) {
+      return Number.isFinite(value) ? Number(value.toFixed(digits)).toString() : "";
+    }
+
+    function setAreaValues({ sqm, ping, source = "" }) {
+      isSyncingArea = true;
+      const nextSqm = Number.isFinite(sqm) ? sqm : (Number.isFinite(ping) ? ping / SQM_TO_PING : 0);
+      const nextPing = Number.isFinite(ping) ? ping : (Number.isFinite(sqm) ? sqm * SQM_TO_PING : 0);
+      $("areaSqm").value = nextSqm > 0 ? decimal(nextSqm) : "";
+      $("area").value = nextPing > 0 ? decimal(nextPing) : "";
+      isSyncingArea = false;
+      $("areaConvertHint").textContent = source
+        ? `已由${source}帶入：${decimal(nextSqm)} 平方公尺，換算 ${decimal(nextPing)} 坪。`
+        : "也可直接輸入坪數，系統會同步換算平方公尺。";
+      if (hasSubmittedResult) resetResult("面積已變更", "請重新按送出產生最新判斷結果。");
+    }
+
+    function syncAreaFromSqm() {
+      if (isSyncingArea) return;
+      const sqm = getNumber("areaSqm");
+      isSyncingArea = true;
+      $("area").value = sqm > 0 ? decimal(sqm * SQM_TO_PING) : "";
+      isSyncingArea = false;
+      $("areaConvertHint").textContent = "已依平方公尺自動換算坪數。";
+      if (hasSubmittedResult) resetResult("面積已變更", "請重新按送出產生最新判斷結果。");
+    }
+
+    function syncAreaFromPing() {
+      if (isSyncingArea) return;
+      const ping = getNumber("area");
+      isSyncingArea = true;
+      $("areaSqm").value = ping > 0 ? decimal(ping / SQM_TO_PING) : "";
+      isSyncingArea = false;
+      $("areaConvertHint").textContent = "已依坪數自動換算平方公尺。";
+      if (hasSubmittedResult) resetResult("面積已變更", "請重新按送出產生最新判斷結果。");
     }
 
     function ageKeyFor(row, age) {
@@ -796,7 +944,7 @@
       if (!$("city").value) missing.push("縣市");
       if (!$("district").value) missing.push("行政區");
       if (!$("address").value.trim()) missing.push("詳細地址");
-      if (getNumber("area") <= 0) missing.push("權狀坪數");
+      if (getNumber("area") <= 0) missing.push("權狀面積或換算坪數");
       if (getNumber("rent") <= 0) missing.push("簽約租金總價");
       if ($("age").value === "" || Number($("age").value) < 0) missing.push("屋齡");
       if ($("location").value === "") missing.push("案件地點等級");
@@ -852,7 +1000,9 @@
 
     function clearForm() {
       $("address").value = "";
+      $("areaSqm").value = "";
       $("area").value = "";
+      $("areaConvertHint").textContent = "也可直接輸入坪數，系統會同步換算平方公尺。";
       $("rent").value = "";
       $("age").value = "";
       $("equipmentValue").value = "";
@@ -866,6 +1016,7 @@
       document.querySelectorAll("[data-equipment]").forEach((input) => {
         input.checked = false;
       });
+      clearDocumentReader();
       resetResult();
     }
 
@@ -878,7 +1029,7 @@
         return;
       }
       const text = [
-        `物件：${$("city").value}${$("district").value}${$("address").value.trim()}，${typeLabel[selectedType()]}，${getNumber("area")} 坪，屋齡 ${getNumber("age")} 年`,
+        `物件：${$("city").value}${$("district").value}${$("address").value.trim()}，${typeLabel[selectedType()]}，${getNumber("areaSqm")} 平方公尺（${getNumber("area")} 坪），屋齡 ${getNumber("age")} 年`,
         `簽約租金：${money(getNumber("rent"))}`,
         `判斷：${$("statusTitle").textContent}`,
         `可受理總租金：${$("allowedTotal").textContent}`,
@@ -891,9 +1042,218 @@
       setTimeout(() => toast.classList.remove("show"), 1600);
     }
 
+    function showToast(message) {
+      const toast = $("toast");
+      toast.textContent = message;
+      toast.classList.add("show");
+      setTimeout(() => toast.classList.remove("show"), 1800);
+    }
+
+    function normalizeOcrText(text) {
+      const fullWidth = "０１２３４５６７８９．";
+      const halfWidth = "0123456789.";
+      return text
+        .replace(/[０-９．]/g, (char) => halfWidth[fullWidth.indexOf(char)] || char)
+        .replace(/[,，]/g, "")
+        .replace(/\s+/g, " ");
+    }
+
+    function addAreaCandidate(map, value, unitType, score, source) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) return;
+      const sqm = unitType === "sqm" ? numeric : numeric / SQM_TO_PING;
+      const ping = unitType === "ping" ? numeric : numeric * SQM_TO_PING;
+      if (sqm < 3 || sqm > 1000 || ping < 1 || ping > 300) return;
+      const key = Math.round(ping * 100);
+      const current = map.get(key);
+      const next = { sqm, ping, score, source };
+      if (!current || next.score > current.score) map.set(key, next);
+    }
+
+    function parseAreaCandidates(text) {
+      const normalized = normalizeOcrText(text);
+      const candidates = new Map();
+      const sqmUnitPattern = /([0-9]+(?:\.[0-9]+)?)\s*(?:平方公尺|平方|㎡|m²|m2|M2|平方米)/g;
+      const pingUnitPattern = /([0-9]+(?:\.[0-9]+)?)\s*坪/g;
+      const contextPattern = /(總面積|建物面積|權狀面積|登記面積|合計|主建物|附屬建物|共有部分)[^0-9]{0,18}([0-9]+(?:\.[0-9]+)?)/g;
+
+      for (const match of normalized.matchAll(sqmUnitPattern)) {
+        addAreaCandidate(candidates, match[1], "sqm", 88, "平方公尺欄位");
+      }
+      for (const match of normalized.matchAll(pingUnitPattern)) {
+        addAreaCandidate(candidates, match[1], "ping", 84, "坪數欄位");
+      }
+      for (const match of normalized.matchAll(contextPattern)) {
+        const keyword = match[1];
+        const score = /總面積|建物面積|權狀面積|登記面積|合計/.test(keyword) ? 96 : 58;
+        addAreaCandidate(candidates, match[2], "sqm", score, keyword);
+      }
+
+      return [...candidates.values()]
+        .sort((a, b) => b.score - a.score || b.sqm - a.sqm)
+        .slice(0, 8);
+    }
+
+    function renderOcrCandidates(candidates) {
+      $("ocrPreview").hidden = false;
+      if (!candidates.length) {
+        $("ocrCandidates").innerHTML = "";
+        $("ocrStatus").textContent = "未找到可判讀的面積，請改用較清楚照片，或直接手動輸入平方公尺。";
+        return;
+      }
+      $("ocrStatus").textContent = `已找到 ${candidates.length} 組可能面積，已先套用最可能的數值，仍請人工確認。`;
+      $("ocrCandidates").dataset.candidates = JSON.stringify(candidates);
+      $("ocrCandidates").innerHTML = candidates.map((candidate, index) => `
+        <button class="candidate-btn${index === 0 ? " active" : ""}" type="button" data-candidate-index="${index}">
+          ${decimal(candidate.sqm)} 平方公尺（${decimal(candidate.ping)} 坪）<br>
+          <small>${candidate.source}</small>
+        </button>
+      `).join("");
+      applyAreaCandidate(candidates[0], "OCR／AI 判讀");
+    }
+
+    function applyAreaCandidate(candidate, source) {
+      setAreaValues({ sqm: candidate.sqm, ping: candidate.ping, source });
+      showToast("已帶入權狀面積");
+    }
+
+    function handleDocumentPick(event) {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      selectedDocumentFile = file;
+      $("ocrPreview").hidden = false;
+      $("ocrCandidates").innerHTML = "";
+      $("ocrStatus").textContent = `已選擇：${file.name}。按「開始辨識」後自動判讀面積。`;
+
+      if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+      previewObjectUrl = "";
+      $("ocrImagePreview").hidden = true;
+      $("ocrImagePreview").removeAttribute("src");
+      if (file.type.startsWith("image/")) {
+        previewObjectUrl = URL.createObjectURL(file);
+        $("ocrImagePreview").src = previewObjectUrl;
+        $("ocrImagePreview").hidden = false;
+      }
+    }
+
+    function clearDocumentReader() {
+      selectedDocumentFile = null;
+      $("documentFile").value = "";
+      $("cameraFile").value = "";
+      $("ocrStatus").textContent = "尚未選擇檔案。";
+      $("ocrCandidates").innerHTML = "";
+      $("ocrPreview").hidden = true;
+      $("ocrImagePreview").hidden = true;
+      $("ocrImagePreview").removeAttribute("src");
+      if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+      previewObjectUrl = "";
+    }
+
+    function ensurePdfJs() {
+      if (!window.pdfjsLib) throw new Error("PDF 辨識套件尚未載入，請稍後再試，或改上傳圖片。");
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+      return window.pdfjsLib;
+    }
+
+    function ensureTesseract() {
+      if (!window.Tesseract?.recognize) throw new Error("OCR 套件尚未載入，請稍後再試，或先手動輸入面積。");
+      return window.Tesseract;
+    }
+
+    async function extractPdfText(file) {
+      const pdfjsLib = ensurePdfJs();
+      const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+      const pageCount = Math.min(pdf.numPages, 4);
+      const textParts = [];
+      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+        $("ocrStatus").textContent = `正在讀取 PDF 第 ${pageNumber} 頁文字...`;
+        const page = await pdf.getPage(pageNumber);
+        const content = await page.getTextContent();
+        textParts.push(content.items.map((item) => item.str).join(" "));
+      }
+      return textParts.join("\n");
+    }
+
+    async function recognizeImage(source, label) {
+      const Tesseract = ensureTesseract();
+      const result = await Tesseract.recognize(source, "chi_tra+eng", {
+        logger: (message) => {
+          if (message.status === "recognizing text") {
+            $("ocrStatus").textContent = `${label}辨識中：${Math.round((message.progress || 0) * 100)}%`;
+          }
+        },
+      });
+      return result.data.text || "";
+    }
+
+    async function recognizePdfImages(file) {
+      const pdfjsLib = ensurePdfJs();
+      const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+      const pageCount = Math.min(pdf.numPages, 2);
+      const textParts = [];
+      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+        $("ocrStatus").textContent = `PDF 第 ${pageNumber} 頁影像轉換中...`;
+        const page = await pdf.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 2 });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+        textParts.push(await recognizeImage(canvas, `PDF 第 ${pageNumber} 頁`));
+      }
+      return textParts.join("\n");
+    }
+
+    async function recognizeDocument() {
+      if (!selectedDocumentFile) {
+        showToast("請先上傳或拍照");
+        return;
+      }
+      const button = $("runOcrBtn");
+      button.disabled = true;
+      button.textContent = "辨識中...";
+      $("ocrCandidates").innerHTML = "";
+      $("ocrStatus").textContent = "準備辨識文件...";
+
+      try {
+        let text = "";
+        if (selectedDocumentFile.type === "application/pdf") {
+          text = await extractPdfText(selectedDocumentFile);
+          if (!parseAreaCandidates(text).length) {
+            text += "\n" + await recognizePdfImages(selectedDocumentFile);
+          }
+        } else if (selectedDocumentFile.type.startsWith("image/")) {
+          text = await recognizeImage(selectedDocumentFile, "圖片");
+        } else {
+          throw new Error("檔案格式不支援，請上傳圖片或 PDF。");
+        }
+        renderOcrCandidates(parseAreaCandidates(text));
+      } catch (error) {
+        $("ocrStatus").textContent = error.message || "辨識失敗，請改用較清楚照片或手動輸入面積。";
+      } finally {
+        button.disabled = false;
+        button.textContent = "開始辨識";
+      }
+    }
+
     populateSelects();
 
     $("city").addEventListener("change", populateDistricts);
+    $("areaSqm").addEventListener("input", syncAreaFromSqm);
+    $("area").addEventListener("input", syncAreaFromPing);
+    $("documentFile").addEventListener("change", handleDocumentPick);
+    $("cameraFile").addEventListener("change", handleDocumentPick);
+    $("runOcrBtn").addEventListener("click", recognizeDocument);
+    $("ocrCandidates").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-candidate-index]");
+      if (!button) return;
+      const candidates = JSON.parse($("ocrCandidates").dataset.candidates || "[]");
+      const candidate = candidates[Number(button.dataset.candidateIndex)];
+      if (!candidate) return;
+      document.querySelectorAll(".candidate-btn").forEach((item) => item.classList.remove("active"));
+      button.classList.add("active");
+      applyAreaCandidate(candidate, "候選面積");
+    });
     $("rentForm").addEventListener("submit", handleSubmit);
     $("rentForm").addEventListener("input", () => {
       updateEquipmentValue();
