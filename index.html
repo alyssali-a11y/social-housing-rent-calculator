@@ -1273,6 +1273,12 @@
         }, 0);
       }
 
+      const totalMatch = compact.match(/總面積[^0-9]{0,16}([0-9]+(?:\.[0-9]+)?)(?:平方公尺|㎡|m2|M2|平方米)?/);
+      if (totalMatch) {
+        const total = Number(totalMatch[1]);
+        if (Number.isFinite(total) && total > 0) return total;
+      }
+
       const lines = normalizeOcrLines(target).filter((line) => !/總面積/.test(line));
       const values = areaValuesFromLines(lines);
       return values.reduce((sum, value) => sum + value, 0);
@@ -1365,21 +1371,80 @@
       return { shared: directShared, parking: 0 };
     }
 
-    function buildingAreaModel(section) {
+    function excelAreaRow(label, sqm, numerator = 1, denominator = 1) {
+      const area = Number(sqm);
+      const top = Number(numerator) || 1;
+      const bottom = Number(denominator) || 1;
+      if (!Number.isFinite(area) || area <= 0 || bottom <= 0) return null;
+      return {
+        label,
+        sqm: area,
+        numerator: top,
+        denominator: bottom,
+        allocatedSqm: area * top / bottom,
+        ping: area * top / bottom * SQM_TO_PING,
+      };
+    }
+
+    function excelSharedRows(section) {
+      const sharedSection = subsection(section, /共有部分/, /主建物|附屬建物|建物門牌|主要用途|建築完成|登記原因|所有權部/);
+      if (!sharedSection) return [];
+      const rows = areaAllocationsFromText(sharedSection);
+      if (rows.length) {
+        return rows
+          .map((row) => excelAreaRow("共有部分", row.area, row.allocated / row.area, 1))
+          .filter(Boolean);
+      }
+      const lineRows = normalizeOcrLines(sharedSection)
+        .map(areaAllocationFromLine)
+        .filter(Boolean)
+        .map((row) => excelAreaRow("共有部分", row.area, row.allocated / row.area, 1))
+        .filter(Boolean);
+      if (lineRows.length) return lineRows;
+
+      const directShared = calculateSharedArea(section);
+      const directRow = excelAreaRow("共有部分", directShared);
+      return directRow ? [directRow] : [];
+    }
+
+    function excelAreaModel(section) {
+      const rows = [];
       const main = sumLayerAreas(section);
       const accessory = sumSectionAreas(section, /附屬建物(?:用途)?(?:面積)?/, /共有部分|主建物|建物門牌|主要用途|建築完成|登記原因|所有權部/);
-      const sharedModel = sharedAreaModel(section);
-      const indoor = main + accessory;
-      const common = sharedModel.shared;
-      const total = indoor + common;
+      const mainRow = excelAreaRow("層次面積", main);
+      const accessoryRow = excelAreaRow("附屬建物", accessory);
+      if (mainRow) rows.push(mainRow);
+      if (accessoryRow) rows.push(accessoryRow);
+      rows.push(...excelSharedRows(section));
+
+      const totalPing = rows.reduce((sum, row) => sum + row.ping, 0);
+      const totalSqm = totalPing / SQM_TO_PING;
+      const common = rows
+        .filter((row) => row.label === "共有部分")
+        .reduce((sum, row) => sum + row.allocatedSqm, 0);
       return {
+        rows,
         main,
         accessory,
-        indoor,
         common,
-        parking: sharedModel.parking,
-        total,
-        commonRatio: total > 0 ? common / total : 0,
+        total: totalSqm,
+        ping: totalPing,
+        commonRatio: totalSqm > 0 ? common / totalSqm : 0,
+      };
+    }
+
+    function buildingAreaModel(section) {
+      const model = excelAreaModel(section);
+      const indoor = model.main + model.accessory;
+      return {
+        main: model.main,
+        accessory: model.accessory,
+        indoor,
+        common: model.common,
+        total: model.total,
+        ping: model.ping,
+        rowCount: model.rows.length,
+        commonRatio: model.commonRatio,
       };
     }
 
@@ -1387,13 +1452,16 @@
       const section = buildingMarkSection(text) || normalizeOcrText(text);
       const model = buildingAreaModel(section);
       const selected = model.total;
+      const expectsMoreRows = /共有部分|附屬建物/.test(section);
+      const hasLayerArea = /層次面積/.test(section);
+      const onlyMainTotal = !hasLayerArea && model.rowCount === 1;
 
-      if (model.main > 0 && selected > 0) {
+      if (model.main > 0 && selected > 0 && !onlyMainTotal && (!expectsMoreRows || model.rowCount > 1)) {
         return {
           sqm: selected,
-          ping: selected * SQM_TO_PING,
+          ping: model.ping,
           score: 130,
-          source: `依謄本／權狀公式：權狀坪數 ${decimal(selected * SQM_TO_PING)} 坪；層次面積 ${decimal(model.main * SQM_TO_PING)}、附屬建物 ${decimal(model.accessory * SQM_TO_PING)}、共有部分 ${decimal(model.common * SQM_TO_PING)}、共有占比 ${percent(model.commonRatio)}`,
+          source: `依 Excel 權狀面積列式計算：權狀面積 ${decimal(model.ping)} 坪；層次面積 ${decimal(model.main * SQM_TO_PING)}、附屬建物 ${decimal(model.accessory * SQM_TO_PING)}、共有部分 ${decimal(model.common * SQM_TO_PING)}、共有占比 ${percent(model.commonRatio)}`,
         };
       }
 
@@ -1411,6 +1479,10 @@
       return [...candidates.values()]
         .sort((a, b) => b.score - a.score || b.sqm - a.sqm)
         .slice(0, 8);
+    }
+
+    function shouldRunPdfImageOcr(text) {
+      return compactText(text).length < 80;
     }
 
     function compactText(text) {
@@ -1801,18 +1873,22 @@
 
       try {
         let text = "";
+        let candidates = [];
         if (selectedDocumentFile.type === "application/pdf") {
           text = await extractPdfText(selectedDocumentFile);
-          if (!parseAreaCandidates(text).length) {
+          candidates = parseAreaCandidates(text);
+          if (!candidates.length && shouldRunPdfImageOcr(text)) {
             text += "\n" + await recognizePdfImages(selectedDocumentFile);
+            candidates = parseAreaCandidates(text);
           }
         } else if (selectedDocumentFile.type.startsWith("image/")) {
           text = await recognizeImage(selectedDocumentFile, "圖片");
+          candidates = parseAreaCandidates(text);
         } else {
           throw new Error("檔案格式不支援，請上傳圖片或 PDF。");
         }
         applyDetectedFields(detectPropertyFields(text, selectedDocumentFile.name));
-        renderOcrCandidates(parseAreaCandidates(text));
+        renderOcrCandidates(candidates);
       } catch (error) {
         const fileFields = detectPropertyFields("", selectedDocumentFile.name);
         if (fileFields.city || fileFields.district) applyDetectedFields(fileFields);
