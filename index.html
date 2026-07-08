@@ -1228,19 +1228,99 @@
       return directValues.reduce((sum, value) => sum + value, 0);
     }
 
-    function totalBuildingAreaCandidate(text) {
-      const section = buildingMarkSection(text) || normalizeOcrText(text);
+    function areaAllocationFromLine(line) {
+      const fraction = line.match(/([0-9]+)\s*分之\s*([0-9]+)/);
+      const unitArea = line.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:平方公尺|㎡|m²|m2|M2|平方米)/);
+      const decimalAreas = [...line.matchAll(/([0-9]+\.[0-9]+)/g)].map((item) => Number(item[1]));
+      const area = unitArea ? Number(unitArea[1]) : (decimalAreas.length ? Math.max(...decimalAreas) : NaN);
+      if (!Number.isFinite(area)) return null;
+      if (!fraction) return { area, allocated: area, isParking: /車位|停車|停車空間|停車位|車道/.test(line) };
+
+      const denominator = Number(fraction[1]);
+      const numerator = Number(fraction[2]);
+      if (!denominator || !numerator || numerator > denominator) return null;
+      return {
+        area,
+        allocated: area * numerator / denominator,
+        isParking: /車位|停車|停車空間|停車位|車道/.test(line),
+      };
+    }
+
+    function areaAllocationsFromText(text) {
+      const normalized = normalizeOcrText(text);
+      const fractionMatches = [...normalized.matchAll(/([0-9]+)\s*分之\s*([0-9]+)/g)];
+      return fractionMatches.map((match) => {
+        const denominator = Number(match[1]);
+        const numerator = Number(match[2]);
+        if (!denominator || !numerator || numerator > denominator) return null;
+
+        const before = normalized.slice(Math.max(0, match.index - 90), match.index);
+        const after = normalized.slice(match.index, Math.min(normalized.length, match.index + 70));
+        const unitMatches = [...before.matchAll(/([0-9]+(?:\.[0-9]+)?)\s*(?:平方公尺|㎡|m²|m2|M2|平方米)/g)];
+        const decimalMatches = [...before.matchAll(/([0-9]+\.[0-9]+)/g)];
+        const areaMatch = unitMatches.at(-1) || decimalMatches.at(-1);
+        const area = areaMatch ? Number(areaMatch[1]) : NaN;
+        if (!Number.isFinite(area)) return null;
+        const context = `${before.slice(-60)}${match[0]}`;
+        return {
+          area,
+          allocated: area * numerator / denominator,
+          isParking: /車位|停車|停車空間|停車位|車道/.test(context),
+        };
+      }).filter(Boolean);
+    }
+
+    function sharedAreaModel(section) {
+      const sharedSection = subsection(section, /共有部分/, /主建物|附屬建物|建物門牌|主要用途|建築完成|登記原因|所有權部/);
+      if (!sharedSection) return { shared: 0, parking: 0 };
+      let rows = areaAllocationsFromText(sharedSection);
+      if (!rows.length) {
+        rows = normalizeOcrLines(sharedSection)
+        .map(areaAllocationFromLine)
+        .filter(Boolean);
+      }
+      const shared = rows.reduce((sum, row) => sum + row.allocated, 0);
+      const parking = rows
+        .filter((row) => row.isParking)
+        .reduce((sum, row) => sum + row.allocated, 0);
+      if (shared > 0) return { shared, parking };
+
+      const directShared = calculateSharedArea(section);
+      return { shared: directShared, parking: 0 };
+    }
+
+    function buildingAreaModel(section) {
       const main = sumSectionAreas(section, /主建物(?:層次)?(?:面積)?/, /附屬建物|共有部分|建物門牌|主要用途|建築完成|登記原因|所有權部/);
       const accessory = sumSectionAreas(section, /附屬建物(?:用途)?(?:面積)?/, /共有部分|主建物|建物門牌|主要用途|建築完成|登記原因|所有權部/);
-      const shared = calculateSharedArea(section);
-      const total = main + accessory + shared;
+      const sharedModel = sharedAreaModel(section);
+      const indoor = main + accessory;
+      const common = Math.max(sharedModel.shared - sharedModel.parking, 0);
+      const total = indoor + common + sharedModel.parking;
+      const withoutParking = indoor + common;
+      return {
+        main,
+        accessory,
+        indoor,
+        common,
+        parking: sharedModel.parking,
+        total,
+        withoutParking,
+        commonRatio: withoutParking > 0 ? common / withoutParking : 0,
+      };
+    }
 
-      if (main > 0 && total > 0) {
+    function totalBuildingAreaCandidate(text) {
+      const section = buildingMarkSection(text) || normalizeOcrText(text);
+      const model = buildingAreaModel(section);
+      const selected = model.parking > 0 ? model.withoutParking : model.total;
+
+      if (model.main > 0 && selected > 0) {
+        const selectedLabel = model.parking > 0 ? "權狀坪數(無車位)" : "權狀坪數";
         return {
-          sqm: total,
-          ping: total * SQM_TO_PING,
+          sqm: selected,
+          ping: selected * SQM_TO_PING,
           score: 130,
-          source: `主建物 ${decimal(main)} + 附屬建物 ${decimal(accessory)} + 共有部分 ${decimal(shared)}`,
+          source: `依房屋坪數計算器：${selectedLabel} ${decimal(selected * SQM_TO_PING)} 坪；室內 ${decimal(model.indoor * SQM_TO_PING)}、公設 ${decimal(model.common * SQM_TO_PING)}、車位 ${decimal(model.parking * SQM_TO_PING)}、公設比 ${percent(model.commonRatio)}`,
         };
       }
 
@@ -1534,7 +1614,7 @@
         $("ocrStatus").textContent = "未找到可判讀的總面積，請確認文件是否有主建物、附屬建物、共有部分或總面積，或直接手動輸入平方公尺。";
         return;
       }
-      $("ocrStatus").textContent = "已依總面積規則帶入面積，仍請人工確認。";
+      $("ocrStatus").textContent = "已依房屋坪數計算器模型帶入面積，仍請人工確認。";
       $("ocrCandidates").dataset.candidates = JSON.stringify(candidates);
       $("ocrCandidates").innerHTML = candidates.map((candidate, index) => `
         <button class="candidate-btn${index === 0 ? " active" : ""}" type="button" data-candidate-index="${index}">
