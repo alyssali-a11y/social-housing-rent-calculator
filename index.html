@@ -376,6 +376,88 @@
       color: var(--primary);
     }
 
+    .area-review {
+      flex-basis: 100%;
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid #d9e4f2;
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .area-review-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 900;
+      color: var(--text);
+    }
+
+    .area-row {
+      display: grid;
+      grid-template-columns: minmax(92px, 1.1fr) minmax(84px, 1fr) 42px minmax(70px, .8fr) 42px minmax(70px, .8fr) minmax(96px, 1fr);
+      gap: 6px;
+      align-items: end;
+      padding: 8px;
+      border: 1px solid #eef1f5;
+      border-radius: 8px;
+      background: #f8fafc;
+    }
+
+    .area-row label {
+      display: grid;
+      gap: 4px;
+      margin: 0;
+      font-size: 12px;
+      font-weight: 700;
+      color: #475467;
+    }
+
+    .area-row input[type="number"] {
+      width: 100%;
+      min-height: 34px;
+      padding: 6px 8px;
+      border: 1px solid #d0d5dd;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+
+    .area-use {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 34px;
+      font-size: 13px;
+      font-weight: 900;
+      color: var(--text);
+    }
+
+    .area-operator {
+      align-self: center;
+      justify-self: center;
+      color: #667085;
+      font-weight: 900;
+    }
+
+    .area-result {
+      min-height: 34px;
+      display: grid;
+      align-content: center;
+      color: var(--text);
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .area-formula {
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #eff8ff;
+      color: #1849a9;
+      font-weight: 800;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
     .form-actions {
       display: flex;
       justify-content: flex-end;
@@ -631,8 +713,13 @@
 
       .form-grid,
       .metrics,
-      .check-list {
+      .check-list,
+      .area-row {
         grid-template-columns: 1fr;
+      }
+
+      .area-operator {
+        display: none;
       }
     }
   </style>
@@ -1203,7 +1290,7 @@
         .replace(/\s+/g, " ");
     }
 
-    function addAreaCandidate(map, value, unitType, score, source) {
+    function addAreaCandidate(map, value, unitType, score, source, details = {}) {
       const numeric = Number(value);
       if (!Number.isFinite(numeric) || numeric <= 0) return;
       const sqm = unitType === "sqm" ? numeric : numeric / SQM_TO_PING;
@@ -1211,7 +1298,7 @@
       if (sqm < 3 || sqm > 1000 || ping < 1 || ping > 300) return;
       const key = Math.round(ping * 100);
       const current = map.get(key);
-      const next = { sqm, ping, score, source };
+      const next = { sqm, ping, score, source, ...details };
       if (!current || next.score > current.score) map.set(key, next);
     }
 
@@ -1316,13 +1403,21 @@
       const decimalAreas = [...line.matchAll(/([0-9]+\.[0-9]+)/g)].map((item) => Number(item[1]));
       const area = unitArea ? Number(unitArea[1]) : (decimalAreas.length ? Math.max(...decimalAreas) : NaN);
       if (!Number.isFinite(area)) return null;
-      if (!fraction) return { area, allocated: area, isParking: /車位|停車|停車空間|停車位|車道/.test(line) };
+      if (!fraction) return {
+        area,
+        numerator: 1,
+        denominator: 1,
+        allocated: area,
+        isParking: /車位|停車|停車空間|停車位|車道/.test(line),
+      };
 
       const denominator = Number(fraction[1]);
       const numerator = Number(fraction[2]);
       if (!denominator || !numerator || numerator > denominator) return null;
       return {
         area,
+        numerator,
+        denominator,
         allocated: area * numerator / denominator,
         isParking: /車位|停車|停車空間|停車位|車道/.test(line),
       };
@@ -1346,6 +1441,8 @@
         const context = `${before.slice(-60)}${match[0]}`;
         return {
           area,
+          numerator,
+          denominator,
           allocated: area * numerator / denominator,
           isParking: /車位|停車|停車空間|停車位|車道/.test(context),
         };
@@ -1371,18 +1468,23 @@
       return { shared: directShared, parking: 0 };
     }
 
-    function excelAreaRow(label, sqm, numerator = 1, denominator = 1) {
+    function excelAreaRow(label, sqm, numerator = 1, denominator = 1, options = {}) {
       const area = Number(sqm);
       const top = Number(numerator) || 1;
       const bottom = Number(denominator) || 1;
       if (!Number.isFinite(area) || area <= 0 || bottom <= 0) return null;
+      const sign = options.sign || 1;
+      const allocatedSqm = area * top / bottom;
       return {
         label,
+        kind: options.kind || "normal",
         sqm: area,
         numerator: top,
         denominator: bottom,
-        allocatedSqm: area * top / bottom,
-        ping: area * top / bottom * SQM_TO_PING,
+        sign,
+        allocatedSqm,
+        signedSqm: allocatedSqm * sign,
+        ping: allocatedSqm * sign * SQM_TO_PING,
       };
     }
 
@@ -1392,18 +1494,30 @@
       const rows = areaAllocationsFromText(sharedSection);
       if (rows.length) {
         return rows
-          .map((row) => excelAreaRow("共有部分", row.area, row.allocated / row.area, 1))
+          .map((row) => excelAreaRow(
+            row.isParking ? "車位共有部分" : "共有部分",
+            row.area,
+            row.numerator,
+            row.denominator,
+            { kind: row.isParking ? "parking" : "shared", sign: row.isParking ? -1 : 1 }
+          ))
           .filter(Boolean);
       }
       const lineRows = normalizeOcrLines(sharedSection)
         .map(areaAllocationFromLine)
         .filter(Boolean)
-        .map((row) => excelAreaRow("共有部分", row.area, row.allocated / row.area, 1))
+        .map((row) => excelAreaRow(
+          row.isParking ? "車位共有部分" : "共有部分",
+          row.area,
+          row.numerator,
+          row.denominator,
+          { kind: row.isParking ? "parking" : "shared", sign: row.isParking ? -1 : 1 }
+        ))
         .filter(Boolean);
       if (lineRows.length) return lineRows;
 
       const directShared = calculateSharedArea(section);
-      const directRow = excelAreaRow("共有部分", directShared);
+      const directRow = excelAreaRow("共有部分", directShared, 1, 1, { kind: "shared" });
       return directRow ? [directRow] : [];
     }
 
@@ -1411,8 +1525,8 @@
       const rows = [];
       const main = sumLayerAreas(section);
       const accessory = sumSectionAreas(section, /附屬建物(?:用途)?(?:面積)?/, /共有部分|主建物|建物門牌|主要用途|建築完成|登記原因|所有權部/);
-      const mainRow = excelAreaRow("層次面積", main);
-      const accessoryRow = excelAreaRow("附屬建物", accessory);
+      const mainRow = excelAreaRow("主建物面積", main, 1, 1, { kind: "main" });
+      const accessoryRow = excelAreaRow("附屬建物面積", accessory, 1, 1, { kind: "accessory" });
       if (mainRow) rows.push(mainRow);
       if (accessoryRow) rows.push(accessoryRow);
       rows.push(...excelSharedRows(section));
@@ -1422,11 +1536,15 @@
       const common = rows
         .filter((row) => row.label === "共有部分")
         .reduce((sum, row) => sum + row.allocatedSqm, 0);
+      const parking = rows
+        .filter((row) => row.kind === "parking")
+        .reduce((sum, row) => sum + row.allocatedSqm, 0);
       return {
         rows,
         main,
         accessory,
         common,
+        parking,
         total: totalSqm,
         ping: totalPing,
         commonRatio: totalSqm > 0 ? common / totalSqm : 0,
@@ -1441,8 +1559,10 @@
         accessory: model.accessory,
         indoor,
         common: model.common,
+        parking: model.parking,
         total: model.total,
         ping: model.ping,
+        rows: model.rows,
         rowCount: model.rows.length,
         commonRatio: model.commonRatio,
       };
@@ -1461,6 +1581,7 @@
           sqm: selected,
           ping: model.ping,
           score: 130,
+          rows: model.rows,
           source: `依 Excel 權狀面積列式計算：權狀面積 ${decimal(model.ping)} 坪；層次面積 ${decimal(model.main * SQM_TO_PING)}、附屬建物 ${decimal(model.accessory * SQM_TO_PING)}、共有部分 ${decimal(model.common * SQM_TO_PING)}、共有占比 ${percent(model.commonRatio)}`,
         };
       }
@@ -1473,7 +1594,7 @@
       const candidates = new Map();
       const totalCandidate = totalBuildingAreaCandidate(normalized);
       if (totalCandidate) {
-        addAreaCandidate(candidates, totalCandidate.sqm, "sqm", totalCandidate.score, totalCandidate.source);
+        addAreaCandidate(candidates, totalCandidate.sqm, "sqm", totalCandidate.score, totalCandidate.source, { rows: totalCandidate.rows || [] });
       }
 
       return [...candidates.values()]
@@ -1758,13 +1879,84 @@
           <small>權狀面積</small>
         </button>
       `).join("");
-      $("ocrCandidates").innerHTML = `${candidateButtons}<div class="ocr-warning">注意：線上辨識功能有限，請務必再次確認相關欄位後再送出！！</div>`;
-      applyAreaCandidate(candidates[0], "OCR／AI 判讀");
+      $("ocrCandidates").dataset.rows = JSON.stringify(candidates[0].rows || []);
+      $("ocrCandidates").innerHTML = `${candidateButtons}${renderAreaReview(candidates[0].rows || [])}<div class="ocr-warning">注意：線上辨識功能有限，請務必再次確認相關欄位後再送出！！</div>`;
+      updateAreaReviewCalculation();
     }
 
     function applyAreaCandidate(candidate, source) {
       setAreaValues({ sqm: candidate.sqm, ping: candidate.ping, source });
       showToast("已帶入權狀面積");
+    }
+
+    function renderAreaReview(rows) {
+      if (!rows.length) return "";
+      const rowHtml = rows.map((row, index) => {
+        const signText = row.sign < 0 ? "扣除" : "採用";
+        return `
+          <div class="area-row" data-area-row data-row-index="${index}" data-area-label="${row.label}" data-area-sign="${row.sign}">
+            <label class="area-use">
+              <input type="checkbox" data-area-use checked>
+              ${signText}${row.label}
+            </label>
+            <label>面積
+              <input type="number" min="0" step="0.0001" data-area-sqm value="${decimal(row.sqm, 4)}">
+            </label>
+            <span class="area-operator">×</span>
+            <label>分子
+              <input type="number" min="0" step="1" data-area-numerator value="${decimal(row.numerator, 4)}">
+            </label>
+            <span class="area-operator">/</span>
+            <label>分母
+              <input type="number" min="1" step="1" data-area-denominator value="${decimal(row.denominator, 4)}">
+            </label>
+            <div class="area-result" data-area-result>待確認</div>
+          </div>
+        `;
+      }).join("");
+      return `
+        <div class="area-review">
+          <p class="area-review-title">請確認 OCR 判讀數字，勾選後自動計算權狀面積</p>
+          ${rowHtml}
+          <div class="area-formula" id="areaFormula">請確認數字。</div>
+        </div>
+      `;
+    }
+
+    function updateAreaReviewCalculation() {
+      const rows = [...document.querySelectorAll("[data-area-row]")];
+      if (!rows.length) return;
+      const parts = [];
+      let totalSqm = 0;
+
+      rows.forEach((row) => {
+        const enabled = row.querySelector("[data-area-use]").checked;
+        const area = Number(row.querySelector("[data-area-sqm]").value) || 0;
+        const numerator = Number(row.querySelector("[data-area-numerator]").value) || 0;
+        const denominator = Number(row.querySelector("[data-area-denominator]").value) || 0;
+        const sign = Number(row.dataset.areaSign) || 1;
+        const label = row.dataset.areaLabel || "面積";
+        const result = denominator > 0 ? area * numerator / denominator * sign : 0;
+        const resultEl = row.querySelector("[data-area-result]");
+        resultEl.textContent = enabled && denominator > 0
+          ? `${decimal(result, 4)} 平方公尺`
+          : "未採用";
+        if (enabled && denominator > 0 && area > 0 && numerator > 0) {
+          totalSqm += result;
+          const prefix = sign < 0 ? "-" : "+";
+          parts.push(`${prefix} ${label} ${decimal(area, 4)} × ${decimal(numerator, 4)} / ${decimal(denominator, 4)}`);
+        }
+      });
+
+      const formula = $("areaFormula");
+      if (!parts.length || totalSqm <= 0) {
+        formula.textContent = "請勾選並確認至少一筆有效面積。";
+        return;
+      }
+
+      const ping = totalSqm * SQM_TO_PING;
+      formula.textContent = `權狀總面積 = ${parts.join(" ")} = ${decimal(totalSqm, 4)} 平方公尺（${decimal(ping)} 坪）`;
+      setAreaValues({ sqm: totalSqm, ping, source: "確認後權狀面積" });
     }
 
     function handleDocumentPick(event) {
@@ -1773,6 +1965,7 @@
       selectedDocumentFile = file;
       $("ocrPreview").hidden = false;
       $("ocrCandidates").innerHTML = "";
+      $("ocrCandidates").dataset.rows = "[]";
       $("ocrFields").hidden = true;
       $("ocrFields").innerHTML = "";
       $("ocrStatus").textContent = `已選擇：${file.name}。按「開始辨識」後自動判讀欄位與面積。`;
@@ -1794,6 +1987,7 @@
       $("cameraFile").value = "";
       $("ocrStatus").textContent = "尚未選擇檔案。";
       $("ocrCandidates").innerHTML = "";
+      $("ocrCandidates").dataset.rows = "[]";
       $("ocrFields").hidden = true;
       $("ocrFields").innerHTML = "";
       $("ocrPreview").hidden = true;
@@ -1915,7 +2109,16 @@
       if (!candidate) return;
       document.querySelectorAll(".candidate-btn").forEach((item) => item.classList.remove("active"));
       button.classList.add("active");
-      applyAreaCandidate(candidate, "候選面積");
+      const currentReview = $("ocrCandidates").querySelector(".area-review");
+      if (currentReview) currentReview.outerHTML = renderAreaReview(candidate.rows || []);
+      $("ocrCandidates").dataset.rows = JSON.stringify(candidate.rows || []);
+      updateAreaReviewCalculation();
+    });
+    $("ocrCandidates").addEventListener("input", (event) => {
+      if (event.target.closest("[data-area-row]")) updateAreaReviewCalculation();
+    });
+    $("ocrCandidates").addEventListener("change", (event) => {
+      if (event.target.closest("[data-area-row]")) updateAreaReviewCalculation();
     });
     $("rentForm").addEventListener("submit", handleSubmit);
     $("rentForm").addEventListener("input", () => {
