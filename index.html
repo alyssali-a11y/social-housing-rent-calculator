@@ -911,6 +911,33 @@
     const percent = (value) => `${Math.round(value * 100)}%`;
     const typeLabel = { whole: "整層住宅", suite: "獨立套房" };
     const SQM_TO_PING = 0.3025;
+    const AREA_UNIT_PATTERN = "(?:平方公尺|㎡|m²|m2|M2|平方米)";
+    const OCR_JOIN_LABELS = [
+      "建物標示部",
+      "土地標示部",
+      "建物所有權部",
+      "所有權部",
+      "建物他項權利部",
+      "他項權利部",
+      "建物門牌",
+      "建物坐落地號",
+      "主要用途",
+      "主要建材",
+      "建築完成日期",
+      "登記原因",
+      "主建物",
+      "附屬建物",
+      "附屬建物用途",
+      "共有部分",
+      "權利範圍",
+      "層次面積",
+      "總面積",
+      "面積",
+      "平方公尺",
+      "停車位",
+      "停車空間",
+      "分之",
+    ];
     let hasSubmittedResult = false;
     let isSyncingArea = false;
     let selectedDocumentFile = null;
@@ -1281,13 +1308,21 @@
       setTimeout(() => toast.classList.remove("show"), 1800);
     }
 
+    function normalizeOcrLabels(text) {
+      return OCR_JOIN_LABELS.reduce((output, label) => {
+        const looseLabel = label.split("").map(escapeRegExp).join("\\s*");
+        return output.replace(new RegExp(looseLabel, "g"), label);
+      }, String(text || ""));
+    }
+
     function normalizeOcrText(text) {
       const fullWidth = "０１２３４５６７８９．";
       const halfWidth = "0123456789.";
-      return text
+      const normalized = String(text || "")
         .replace(/[０-９．]/g, (char) => halfWidth[fullWidth.indexOf(char)] || char)
         .replace(/[,，]/g, "")
         .replace(/\s+/g, " ");
+      return normalizeOcrLabels(normalized);
     }
 
     function addAreaCandidate(map, value, unitType, score, source, details = {}) {
@@ -1304,6 +1339,7 @@
 
     function normalizeOcrLines(text) {
       return normalizeOcrText(text)
+        .replace(/(建物標示部|主建物|層次面積|總面積|附屬建物用途|附屬建物|共有部分|權利範圍|建築完成日期|建物所有權部|所有權部)/g, "\n$1")
         .replace(/([。；;])/g, "$1\n")
         .split(/\n+/)
         .map((line) => line.trim())
@@ -1327,16 +1363,39 @@
       return sectionBetween(text, startPattern, stopPattern) || "";
     }
 
+    function sectionUntil(text, stopPattern) {
+      const normalized = normalizeOcrText(text);
+      const stop = normalized.search(stopPattern);
+      return stop >= 0 ? normalized.slice(0, stop) : normalized;
+    }
+
+    function areaValuesFromText(text) {
+      const normalized = normalizeOcrText(text);
+      const unitRegex = new RegExp(`([0-9]+(?:\\.[0-9]+)?)\\s*${AREA_UNIT_PATTERN}`, "g");
+      const unitValues = [...normalized.matchAll(unitRegex)]
+        .map((match) => Number(match[1]))
+        .filter((value) => Number.isFinite(value) && value > 0 && value < 10000);
+      if (unitValues.length) return unitValues;
+
+      return [...normalized.matchAll(/([0-9]+\.[0-9]+)/g)]
+        .map((match) => Number(match[1]))
+        .filter((value) => Number.isFinite(value) && value > 0 && value < 10000);
+    }
+
+    function areaValuesAfterLabel(text, label) {
+      const compact = compactText(text);
+      const labelPattern = escapeRegExp(label);
+      const regex = new RegExp(`${labelPattern}[^0-9]{0,40}([0-9]+(?:\\.[0-9]+)?)(?:${AREA_UNIT_PATTERN})?`, "g");
+      return [...compact.matchAll(regex)]
+        .map((match) => Number(match[1]))
+        .filter((value) => Number.isFinite(value) && value > 0 && value < 10000);
+    }
+
     function areaValuesFromLines(lines) {
       const values = [];
       lines.forEach((line) => {
-        if (/建號|地號|權利範圍|分之|日期|原因|門牌|坐落/.test(line)) return;
-        const unitMatches = [...line.matchAll(/([0-9]+(?:\.[0-9]+)?)\s*(?:平方公尺|㎡|m²|m2|M2|平方米)/g)];
-        const decimalMatches = unitMatches.length ? unitMatches : [...line.matchAll(/([0-9]+\.[0-9]+)/g)];
-        decimalMatches.forEach((match) => {
-          const value = Number(match[1]);
-          if (Number.isFinite(value) && value > 0 && value < 1000) values.push(value);
-        });
+        if (/權利範圍|分之/.test(line) && !new RegExp(AREA_UNIT_PATTERN).test(line)) return;
+        values.push(...areaValuesFromText(line));
       });
       return values;
     }
@@ -1349,21 +1408,17 @@
     }
 
     function sumLayerAreas(section) {
-      const target = subsection(section, /主建物(?:層次)?(?:面積)?/, /附屬建物|共有部分|建物門牌|主要用途|建築完成|登記原因|所有權部/);
+      const target = subsection(section, /主建物(?:層次)?(?:面積)?/, /附屬建物|共有部分|建物門牌|主要用途|建築完成|登記原因|所有權部/)
+        || sectionUntil(section, /附屬建物|共有部分|建築完成日期|其他登記事項|所有權部/);
       if (!target) return 0;
-      const compact = compactText(target);
-      const layerMatches = [...compact.matchAll(/層次面積[^0-9]{0,16}([0-9]+(?:\.[0-9]+)?)(?:平方公尺|㎡|m2|M2|平方米)?/g)];
-      if (layerMatches.length) {
-        return layerMatches.reduce((sum, match) => {
-          const value = Number(match[1]);
-          return Number.isFinite(value) && value > 0 ? sum + value : sum;
-        }, 0);
+      const layerValues = areaValuesAfterLabel(target, "層次面積");
+      if (layerValues.length) {
+        return layerValues.reduce((sum, value) => sum + value, 0);
       }
 
-      const totalMatch = compact.match(/總面積[^0-9]{0,16}([0-9]+(?:\.[0-9]+)?)(?:平方公尺|㎡|m2|M2|平方米)?/);
-      if (totalMatch) {
-        const total = Number(totalMatch[1]);
-        if (Number.isFinite(total) && total > 0) return total;
+      const totalValues = areaValuesAfterLabel(target, "總面積");
+      if (totalValues.length) {
+        return totalValues[0];
       }
 
       const lines = normalizeOcrLines(target).filter((line) => !/總面積/.test(line));
@@ -1431,9 +1486,9 @@
         const numerator = Number(match[2]);
         if (!denominator || !numerator || numerator > denominator) return null;
 
-        const before = normalized.slice(Math.max(0, match.index - 90), match.index);
+        const before = normalized.slice(Math.max(0, match.index - 220), match.index);
         const after = normalized.slice(match.index, Math.min(normalized.length, match.index + 70));
-        const unitMatches = [...before.matchAll(/([0-9]+(?:\.[0-9]+)?)\s*(?:平方公尺|㎡|m²|m2|M2|平方米)/g)];
+        const unitMatches = [...before.matchAll(new RegExp(`([0-9]+(?:\\.[0-9]+)?)\\s*${AREA_UNIT_PATTERN}`, "g"))];
         const decimalMatches = [...before.matchAll(/([0-9]+\.[0-9]+)/g)];
         const areaMatch = unitMatches.at(-1) || decimalMatches.at(-1);
         const area = areaMatch ? Number(areaMatch[1]) : NaN;
@@ -1574,15 +1629,15 @@
       const selected = model.total;
       const expectsMoreRows = /共有部分|附屬建物/.test(section);
       const hasLayerArea = /層次面積/.test(section);
-      const onlyMainTotal = !hasLayerArea && model.rowCount === 1;
+      const onlyUnsafeMainTotal = !hasLayerArea && expectsMoreRows && model.rowCount === 1;
 
-      if (model.main > 0 && selected > 0 && !onlyMainTotal && (!expectsMoreRows || model.rowCount > 1)) {
+      if (model.main > 0 && selected > 0 && !onlyUnsafeMainTotal && (!expectsMoreRows || model.rowCount > 1)) {
         return {
           sqm: selected,
           ping: model.ping,
           score: 130,
           rows: model.rows,
-          source: `依 Excel 權狀面積列式計算：權狀面積 ${decimal(model.ping)} 坪；層次面積 ${decimal(model.main * SQM_TO_PING)}、附屬建物 ${decimal(model.accessory * SQM_TO_PING)}、共有部分 ${decimal(model.common * SQM_TO_PING)}、共有占比 ${percent(model.commonRatio)}`,
+          source: `依權狀面積公式計算：權狀面積 ${decimal(model.ping)} 坪；主建物 ${decimal(model.main * SQM_TO_PING)}、附屬建物 ${decimal(model.accessory * SQM_TO_PING)}、共有部分 ${decimal(model.common * SQM_TO_PING)}、共有占比 ${percent(model.commonRatio)}`,
         };
       }
 
