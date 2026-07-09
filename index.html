@@ -309,6 +309,19 @@
       padding: 14px;
     }
 
+    .doc-reader legend {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .doc-reader-notice {
+      color: var(--bad);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
     .doc-actions {
       display: flex;
       flex-wrap: wrap;
@@ -827,7 +840,10 @@
         <div class="panel-body">
           <div class="form-grid">
             <fieldset class="field full doc-reader">
-              <legend>上傳權狀或一類謄本辨識</legend>
+              <legend>
+                <span>上傳權狀或謄本辨識</span>
+                <strong class="doc-reader-notice">建議上傳謄本提高辨識正確度</strong>
+              </legend>
               <div class="doc-actions">
                 <label class="upload-button" for="documentFile">上傳權狀或謄本</label>
                 <input id="documentFile" type="file" accept="image/*,application/pdf">
