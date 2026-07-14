@@ -1596,6 +1596,7 @@
       const fullWidth = "０１２３４５６７８９．";
       const halfWidth = "0123456789.";
       const normalized = String(text || "")
+        .normalize("NFKC")
         .replace(/[０-９．]/g, (char) => halfWidth[fullWidth.indexOf(char)] || char)
         .replace(/[,，]/g, "")
         .replace(/\s+/g, " ");
@@ -1690,7 +1691,7 @@
 
     function sumLayerAreas(section) {
       const target = subsection(section, /主建物(?:層次)?(?:面積)?/, /附屬建物|共有部分|建物門牌|主要用途|建築完成|登記原因|所有權部/)
-        || sectionUntil(section, /附屬建物|共有部分|建築完成日期|其他登記事項|所有權部/);
+        || sectionUntil(section, /附屬建物|共有部分|其他登記事項|所有權部/);
       if (!target) return 0;
       const layerValues = areaValuesAfterLabel(target, "層次面積");
       if (layerValues.length) {
@@ -2095,11 +2096,46 @@
       if (stop >= 0) clean = clean.slice(0, stop);
       const roadStart = clean.search(/[一-龥A-Za-z0-9０-９]+(?:大道|路|街|巷|弄|段)/);
       if (roadStart > 0) clean = clean.slice(roadStart);
+      clean = normalizeAddressNumberText(clean);
       const addressMatch = clean.match(/^(.{1,80}?號(?:之[0-9一二三四五六七八九十]+)?(?:[0-9一二三四五六七八九十]+樓(?:之[0-9一二三四五六七八九十]+)?)?)/);
       if (addressMatch) return addressMatch[1];
       const fallbackEnd = clean.search(/(?:主要用途|用途|層次|總面積|建物面積|權利範圍)/);
       if (fallbackEnd >= 0) clean = clean.slice(0, fallbackEnd);
       return clean.slice(0, 40);
+    }
+
+    function chineseNumberToInteger(text) {
+      const source = String(text || "");
+      if (!source) return "";
+      if (/^[0-9]+$/.test(source)) return source;
+      const digits = { 零: 0, 〇: 0, 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+      const units = { 十: 10, 百: 100, 千: 1000 };
+      if (![...source].some((char) => units[char])) {
+        const direct = [...source].map((char) => digits[char]);
+        return direct.every((value) => value !== undefined) ? direct.join("") : source;
+      }
+
+      let total = 0;
+      let current = 0;
+      [...source].forEach((char) => {
+        if (digits[char] !== undefined) {
+          current = digits[char];
+          return;
+        }
+        const unit = units[char];
+        if (unit) {
+          total += (current || 1) * unit;
+          current = 0;
+        }
+      });
+      total += current;
+      return total > 0 ? String(total) : source;
+    }
+
+    function normalizeAddressNumberText(text) {
+      return String(text || "")
+        .replace(/[零〇一二兩三四五六七八九十百千]{1,6}(?=(?:巷|弄|號|樓))/g, chineseNumberToInteger)
+        .replace(/之([零〇一二兩三四五六七八九十百千]{1,6})/g, (_, number) => `之${chineseNumberToInteger(number)}`);
     }
 
     function extractAddress(text, city, district) {
