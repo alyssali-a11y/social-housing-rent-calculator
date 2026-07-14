@@ -271,6 +271,24 @@
       font-size: 13px;
     }
 
+    .completion-date {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(76px, .72fr) auto;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .completion-date input {
+      min-width: 0;
+    }
+
+    .completion-date span {
+      color: #344054;
+      font-size: 14px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
     .level-help {
       border: 1px solid #e4e9f2;
       border-radius: 8px;
@@ -851,7 +869,7 @@
                 <input id="cameraFile" type="file" accept="image/*" capture="environment">
                 <button class="btn" id="runOcrBtn" type="button">開始辨識</button>
               </div>
-              <p class="hint">辨識後會嘗試帶入縣市、行政區、詳細地址、屋齡與面積；所有欄位仍可手動修改。</p>
+              <p class="hint">辨識後會嘗試帶入縣市、行政區、詳細地址、建築完成年月與面積；所有欄位仍可手動修改。</p>
               <div class="ocr-status" id="ocrStatus">尚未選擇檔案。</div>
               <div class="ocr-preview" id="ocrPreview" hidden>
                 <img id="ocrImagePreview" alt="上傳文件預覽" hidden>
@@ -893,8 +911,15 @@
               <input id="rent" type="number" min="0" step="1">
             </div>
             <div class="field">
-              <label for="age">屋齡</label>
-              <input id="age" type="number" min="0" step="1">
+              <label for="completeYear">建築完成年月</label>
+              <div class="completion-date">
+                <input id="completeYear" type="text" inputmode="numeric" maxlength="3" pattern="[0-9]*" placeholder="例如 088">
+                <span>年</span>
+                <input id="completeMonth" type="text" inputmode="numeric" maxlength="2" pattern="[0-9]*" placeholder="例如 05">
+                <span>月</span>
+              </div>
+              <input id="age" type="hidden">
+              <p class="hint" id="ageHint">請輸入建築完成年月，系統會自動換算屋齡。</p>
             </div>
             <div class="field">
               <label for="location">案件地點等級</label>
@@ -1092,6 +1117,62 @@
       isSyncingArea = false;
       $("areaConvertHint").textContent = "已依坪數自動換算平方公尺。";
       if (hasSubmittedResult) resetResult("面積已變更", "請重新按送出產生最新判斷結果。");
+    }
+
+    function formatRocYearValue(value) {
+      const text = String(value || "").trim();
+      if (!text) return "";
+      const number = Number(text);
+      if (!Number.isFinite(number) || number >= 1000) return text;
+      return String(number).padStart(3, "0");
+    }
+
+    function formatMonthValue(value) {
+      const text = String(value || "").trim();
+      if (!text) return "";
+      const number = Number(text);
+      if (!Number.isFinite(number)) return text;
+      return String(number).padStart(2, "0");
+    }
+
+    function completionYearMonthText() {
+      const year = $("completeYear").value.trim();
+      const month = $("completeMonth").value.trim();
+      if (!year && !month) return "";
+      return `${formatRocYearValue(year) || "未填"} 年 ${formatMonthValue(month) || "未填"} 月`;
+    }
+
+    function updateAgeFromCompletion() {
+      const yearText = $("completeYear").value.trim();
+      const monthText = $("completeMonth").value.trim();
+      const hint = $("ageHint");
+      $("age").value = "";
+
+      if (!yearText && !monthText) {
+        hint.textContent = "請輸入建築完成年月，系統會自動換算屋齡。";
+        return "";
+      }
+
+      const year = Number(yearText);
+      const month = Number(monthText);
+      if (!Number.isInteger(year) || year <= 0 || year > 999) {
+        hint.textContent = "請輸入正確民國年，例如 088、102 或 115。";
+        return "";
+      }
+      if (!Number.isInteger(month) || month < 1 || month > 12) {
+        hint.textContent = "請輸入正確月份，範圍為 1 到 12。";
+        return "";
+      }
+
+      const age = calculateAgeFromDate(year, month, 1);
+      if (age === "") {
+        hint.textContent = "建築完成年月不可晚於目前日期，請再次確認。";
+        return "";
+      }
+
+      $("age").value = age;
+      hint.textContent = `已依建築完成年月 ${formatRocYearValue(yearText)} 年 ${formatMonthValue(month)} 月換算屋齡 ${age} 年。`;
+      return age;
     }
 
     function ageKeyFor(row, age) {
@@ -1292,10 +1373,11 @@
       $("allowedTotal").textContent = "-";
       $("plannedRent").textContent = "-";
       $("comparison").innerHTML = "";
-      $("ruleNotes").innerHTML = "<li>送出後會依縣市、行政區、案件類型、坪數、屋齡、區位、裝修與設備產生明細。</li>";
+      $("ruleNotes").innerHTML = "<li>送出後會依縣市、行政區、案件類型、坪數、建築完成年月換算屋齡、區位、裝修與設備產生明細。</li>";
     }
 
     function validateRequiredFields() {
+      updateAgeFromCompletion();
       const missing = [];
       if (!selectedType()) missing.push("案件類型");
       if (!$("city").value) missing.push("縣市");
@@ -1303,7 +1385,7 @@
       if (!$("address").value.trim()) missing.push("詳細地址");
       if (getNumber("area") <= 0) missing.push("權狀面積或換算坪數");
       if (getNumber("rent") <= 0) missing.push("簽約租金總價");
-      if ($("age").value === "" || Number($("age").value) < 0) missing.push("屋齡");
+      if ($("age").value === "") missing.push("建築完成年月");
       if ($("location").value === "") missing.push("案件地點等級");
       if ($("renovation").value === "") missing.push("裝潢等級");
       return missing;
@@ -1311,6 +1393,7 @@
 
     function handleSubmit(event) {
       event.preventDefault();
+      updateAgeFromCompletion();
       updateEquipmentValue();
       const missing = validateRequiredFields();
       if (missing.length) {
@@ -1361,7 +1444,10 @@
       $("area").value = "";
       $("areaConvertHint").textContent = "也可直接輸入坪數，系統會同步換算平方公尺。";
       $("rent").value = "";
+      $("completeYear").value = "";
+      $("completeMonth").value = "";
       $("age").value = "";
+      $("ageHint").textContent = "請輸入建築完成年月，系統會自動換算屋齡。";
       $("equipmentValue").value = "";
       $("city").value = "";
       populateDistricts();
@@ -1386,7 +1472,7 @@
         return;
       }
       const text = [
-        `物件：${$("city").value}${$("district").value}${$("address").value.trim()}，${typeLabel[selectedType()]}，${getNumber("areaSqm")} 平方公尺（${getNumber("area")} 坪），屋齡 ${getNumber("age")} 年`,
+        `物件：${$("city").value}${$("district").value}${$("address").value.trim()}，${typeLabel[selectedType()]}，${getNumber("areaSqm")} 平方公尺（${getNumber("area")} 坪），建築完成年月 ${completionYearMonthText()}，屋齡 ${getNumber("age")} 年`,
         `簽約租金：${money(getNumber("rent"))}`,
         `判斷：${$("statusTitle").textContent}`,
         `可受理總租金：${$("allowedTotal").textContent}`,
@@ -1951,19 +2037,49 @@
       let age = current.getFullYear() - adYear;
       const numericMonth = Number(month) || 1;
       const numericDay = Number(day) || 1;
+      if (numericMonth < 1 || numericMonth > 12 || numericDay < 1 || numericDay > 31) return "";
+      const completionDate = new Date(adYear, numericMonth - 1, numericDay);
+      if (completionDate > current) return "";
       if (current.getMonth() + 1 < numericMonth || (current.getMonth() + 1 === numericMonth && current.getDate() < numericDay)) {
         age -= 1;
       }
       return String(Math.max(0, age));
     }
 
-    function extractAge(text) {
+    function extractCompletionDate(text) {
       const normalized = normalizeOcrText(text);
       const completeDate = normalized.match(/(?:建築完成日期|建築完成日|建築完成|完工日期|完工日)[^0-9]{0,12}([0-9]{2,4})[年./\- ]{1,3}([0-9]{1,2})[月./\- ]{0,3}([0-9]{1,2})?/);
-      if (completeDate) return calculateAgeFromDate(completeDate[1], completeDate[2], completeDate[3]);
+      if (completeDate) {
+        const age = calculateAgeFromDate(completeDate[1], completeDate[2], completeDate[3]);
+        return age === "" ? null : {
+          year: completeDate[1],
+          month: completeDate[2],
+          day: completeDate[3] || "1",
+          age,
+        };
+      }
       const yearOnly = normalized.match(/(?:建築完成日期|建築完成日|建築完成|完工日期|完工日)[^0-9]{0,12}([0-9]{2,4})/);
-      if (yearOnly) return calculateAgeFromDate(yearOnly[1]);
+      if (yearOnly) {
+        return {
+          year: yearOnly[1],
+          month: "",
+          day: "",
+          age: "",
+        };
+      }
+      return null;
+    }
+
+    function extractAge(text) {
+      const completionDate = extractCompletionDate(text);
+      if (completionDate?.age) return completionDate.age;
       return "";
+    }
+
+    function completionDateText(fields) {
+      if (!fields.completionYear) return "";
+      const month = fields.completionMonth ? formatMonthValue(fields.completionMonth) : "未辨識";
+      return `${formatRocYearValue(fields.completionYear)} 年 ${month} 月`;
     }
 
     function detectPropertyFields(text, fileName = "") {
@@ -1977,11 +2093,14 @@
       if (!city && fileDistrict) city = cityFromDistrict(fileDistrict);
       if (!city && buildingDistrict) city = cityFromDistrict(buildingDistrict);
       const district = detectDistrictInSource(addressSource, city) || fileDistrict || buildingDistrict || detectDistrict(text, city);
+      const completionDate = extractCompletionDate(text);
       return {
         city,
         district,
         address: extractAddress(text, city, district),
-        age: extractAge(text),
+        completionYear: completionDate?.year || "",
+        completionMonth: completionDate?.month || "",
+        age: completionDate?.age || "",
       };
     }
 
@@ -1990,13 +2109,14 @@
         ["縣市", fields.city],
         ["行政區", fields.district],
         ["詳細地址", fields.address],
-        ["屋齡", fields.age ? `${fields.age} 年` : ""],
+        ["建築完成年月", completionDateText(fields)],
+        ["換算屋齡", fields.age ? `${fields.age} 年` : ""],
       ];
       const filled = rows.filter(([, value]) => value);
       $("ocrFields").hidden = false;
       $("ocrFields").innerHTML = filled.length
         ? filled.map(([label, value]) => `<div><strong>${label}</strong>：${value}</div>`).join("")
-        : "<div>尚未辨識到縣市、行政區、地址或屋齡，可直接手動輸入。</div>";
+        : "<div>尚未辨識到縣市、行政區、地址或建築完成年月，可直接手動輸入。</div>";
     }
 
     function applyDetectedFields(fields) {
@@ -2014,9 +2134,11 @@
         $("address").value = fields.address;
         applied.push("詳細地址");
       }
-      if (fields.age) {
-        $("age").value = fields.age;
-        applied.push("屋齡");
+      if (fields.completionYear) {
+        $("completeYear").value = formatRocYearValue(fields.completionYear);
+        if (fields.completionMonth) $("completeMonth").value = formatMonthValue(fields.completionMonth);
+        updateAgeFromCompletion();
+        applied.push("建築完成年月");
       }
       renderDetectedFields(fields);
       if (applied.length) {
@@ -2257,6 +2379,8 @@
     $("city").addEventListener("change", populateDistricts);
     $("areaSqm").addEventListener("input", syncAreaFromSqm);
     $("area").addEventListener("input", syncAreaFromPing);
+    $("completeYear").addEventListener("input", updateAgeFromCompletion);
+    $("completeMonth").addEventListener("input", updateAgeFromCompletion);
     $("documentFile").addEventListener("change", handleDocumentPick);
     $("cameraFile").addEventListener("change", handleDocumentPick);
     $("runOcrBtn").addEventListener("click", recognizeDocument);
