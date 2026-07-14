@@ -364,18 +364,30 @@
     }
 
     .doc-reader {
+      display: grid;
+      gap: 10px;
       border: 1px solid #f2c277;
+      border-left: 4px solid var(--brand);
       border-radius: 8px;
       background: linear-gradient(180deg, #fffaf2 0%, #ffffff 100%);
       padding: 14px;
-      box-shadow: inset 4px 0 0 var(--brand);
+      overflow: hidden;
     }
 
-    .doc-reader legend {
+    .doc-reader-title {
       display: flex;
       align-items: center;
       gap: 10px;
       flex-wrap: wrap;
+      min-width: 0;
+      color: #344054;
+      font-size: 14px;
+      font-weight: 900;
+      line-height: 1.45;
+    }
+
+    .doc-reader-title span {
+      min-width: 0;
     }
 
     .doc-reader-notice {
@@ -388,7 +400,7 @@
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
-      margin-top: 8px;
+      min-width: 0;
     }
 
     .doc-actions input[type="file"] {
@@ -419,7 +431,6 @@
     }
 
     .ocr-status {
-      margin-top: 10px;
       color: #344054;
       font-size: 14px;
     }
@@ -937,11 +948,11 @@
         </div>
         <div class="panel-body">
           <div class="form-grid">
-            <fieldset class="field full doc-reader">
-              <legend>
+            <div class="field full doc-reader">
+              <div class="doc-reader-title">
                 <span>上傳權狀或謄本辨識</span>
                 <strong class="doc-reader-notice">建議上傳謄本提高辨識正確度</strong>
-              </legend>
+              </div>
               <div class="doc-actions">
                 <label class="upload-button" for="documentFile">上傳權狀或謄本</label>
                 <input id="documentFile" type="file" accept="image/*,application/pdf">
@@ -956,7 +967,7 @@
                 <div class="ocr-fields" id="ocrFields" hidden></div>
                 <div class="ocr-candidates" id="ocrCandidates"></div>
               </div>
-            </fieldset>
+            </div>
             <fieldset class="field">
               <legend>案件類型</legend>
               <div class="segmented">
